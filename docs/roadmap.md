@@ -81,3 +81,17 @@
 - [ ] AWS cleanup
 - [ ] Final GitHub README
 - [ ] Resume bullets
+
+================================================================================
+
+
+## Phase 2 — Application
+
+- [x] Build sample application
+- [x] Health endpoint
+- [x] Metrics endpoint
+- [x] Dockerize application
+- [x] Docker health check
+- [x] Container resource limits
+- [x] Container failure test
+- [x] Container logging

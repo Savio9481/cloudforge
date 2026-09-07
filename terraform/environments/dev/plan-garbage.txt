@@ -1,0 +1,27 @@
+Estimated remaining time
+Phase	Topics	Time
+5F	Docker + deploy API on EC2	1 day
+6	Terraform improvements + environments	1 day
+7	Jenkins CI/CD	1 day
+8	Dev/Staging environments	0.5 day
+9	Prometheus + Grafana + CloudWatch	1 day
+10	Self-healing + health detection	1 day
+11	Chaos engineering	0.5 day
+12	Load/stress testing	0.5 day
+13	AI incident analyzer	1 day
+14	Policy engine + safe remediation	0.5 day
+15	Drift detection	0.5 day
+16	SRE/DORA metrics	0.5 day
+17	Final GitHub docs + architecture + evidence	1 day
+
+
+DAY 1  → 5F + Docker + API
+DAY 2  → Terraform + Jenkins
+DAY 3  → CI/CD + Dev/Staging
+DAY 4  → Monitoring
+DAY 5  → Self-Healing
+DAY 6  → Chaos + Recovery
+DAY 7  → Load Testing
+DAY 8  → AI Incident Analyzer
+DAY 9  → Policy + Drift + SRE metrics
+DAY 10 → Documentation + GitHub + final testing
