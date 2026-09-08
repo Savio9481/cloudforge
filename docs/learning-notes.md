@@ -164,3 +164,58 @@ Detect → Analyze → Decide → Recover → Verify
 - Container logs
 - Resource limits
 - Docker restart policies
+
+
+## Phase 5 — AWS + Docker Deployment Baseline
+
+### Infrastructure
+
+- AWS Region: us-east-1
+- VPC CIDR: 10.0.0.0/16
+- Public Subnet: 10.0.1.0/24
+- Availability Zone: us-east-1a
+- EC2 Instance Type: t3.micro
+- Operating System: Ubuntu 24.04
+- EC2 Instance ID: i-0f8e93bf92bdd54a2
+- Access Method: AWS Systems Manager Session Manager
+- Infrastructure Management: Terraform
+
+### Application
+
+- Application: CloudForge Demo API
+- Framework: FastAPI
+- Container: Docker
+- Image: cloudforge-api:1.0.0
+- Container Port: 8000
+- Healthcheck: Docker HEALTHCHECK
+- Application Health Endpoint: /health
+- Metrics Endpoint: /metrics
+
+### Validation
+
+External API testing from Windows returned HTTP 200:
+
+- GET /health → healthy
+- GET / → application running
+- GET /metrics → CPU and memory metrics returned
+
+Example health response:
+
+{"status":"healthy","version":"1.0.0"}
+
+### Infrastructure Drift Observation
+
+Stopping and restarting the EC2 instance changed its public IP:
+
+- Previous IP: 3.238.158.9
+- Current IP: 18.208.207.44
+
+Terraform detected this external change and updated the state/output values without recreating infrastructure.
+
+### Important Learning
+
+A Docker healthcheck confirms whether the application is healthy, but it does not implement CloudForge's complete self-healing system.
+
+CloudForge will later implement:
+
+Detect → Analyze → Decide → Recover → Verify → Measure
