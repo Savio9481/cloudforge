@@ -18,3 +18,7 @@ chaos testing, load testing, and AI-assisted incident analysis.
 All AWS infrastructure will be created temporarily for
 learning and testing purposes and destroyed after experiments
 to minimize unnecessary cloud costs.
+
+## CI/CD Webhook Test
+
+GitHub webhook successfully configured for CloudForge Jenkins CI/CD.
