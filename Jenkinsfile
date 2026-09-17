@@ -1,6 +1,11 @@
 pipeline {
     agent any
 
+    environment {
+        IMAGE_NAME = 'cloudforge-api'
+        IMAGE_TAG = "${env.GIT_COMMIT.take(7)}"
+    }
+
     stages {
 
         stage('Checkout') {
@@ -22,8 +27,10 @@ pipeline {
         stage('Docker Build') {
             steps {
                 sh '''
+                    echo "Building image: ${IMAGE_NAME}:${IMAGE_TAG}"
+
                     docker build \
-                      -t cloudforge-api:1.0.0 \
+                      -t ${IMAGE_NAME}:${IMAGE_TAG} \
                       ./app
                 '''
             }
@@ -32,13 +39,15 @@ pipeline {
         stage('Deploy') {
             steps {
                 sh '''
+                    echo "Deploying image: ${IMAGE_NAME}:${IMAGE_TAG}"
+
                     docker rm -f cloudforge-api 2>/dev/null || true
 
                     docker run -d \
                       --name cloudforge-api \
                       -p 8000:8000 \
                       --restart unless-stopped \
-                      cloudforge-api:1.0.0
+                      ${IMAGE_NAME}:${IMAGE_TAG}
                 '''
             }
         }
@@ -79,6 +88,8 @@ pipeline {
 
                     docker exec cloudforge-api \
                         python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health').read().decode())"
+
+                    echo "Deployment verified successfully."
                 '''
             }
         }
