@@ -8,13 +8,6 @@ pipeline {
 
     stages {
 
-        stage('Checkout') {
-            steps {
-                git branch: 'main',
-                    url: 'https://github.com/Savio9481/cloudforge.git'
-            }
-        }
-
         stage('Test') {
             steps {
                 sh '''
