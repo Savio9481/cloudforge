@@ -16,16 +16,16 @@ pipeline {
         }
 
         stage('Test') {
-        steps {
-            sh '''
-                docker run --rm \
-                -v "$WORKSPACE/app:/app" \
-                -w /app \
-                python:3.12-slim \
-                sh -c "pip install --no-cache-dir -r requirements.txt && pytest -v"
-            '''
+            steps {
+                sh '''
+                    docker run --rm \
+                    -v "$WORKSPACE/app:/app" \
+                    -w /app \
+                    python:3.12-slim \
+                    sh -c "pip install --no-cache-dir -r requirements.txt && pytest -v"
+                '''
+            }
         }
-    }
 
         stage('Docker Build') {
             steps {
