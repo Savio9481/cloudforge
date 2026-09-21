@@ -1,20 +1,12 @@
 resource "aws_security_group" "cloudforge" {
-  name        = "cloudforge-dev-sg"
-  description = "Security group for CloudForge development EC2"
+  name        = "cloudforge-staging-sg"
+  description = "Security group for CloudForge staging EC2"
   vpc_id      = module.network.vpc_id
 
   ingress {
     description = "CloudForge API"
     from_port   = 8000
     to_port     = 8000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Jenkins"
-    from_port   = 8080
-    to_port     = 8080
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -28,6 +20,6 @@ resource "aws_security_group" "cloudforge" {
   }
 
   tags = {
-    Name = "cloudforge-dev-sg"
+    Name = "cloudforge-staging-sg"
   }
 }
