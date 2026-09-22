@@ -78,7 +78,7 @@ pipeline {
     "aws ecr get-login-password --region __AWS_REGION__ | docker login --username AWS --password-stdin __ECR_REGISTRY__",
     "docker pull __ECR_REGISTRY__/__ECR_REPOSITORY__:__IMAGE_TAG__",
     "docker rm -f cloudforge-api 2>/dev/null || true",
-    "docker run -d --name cloudforge-api -p 8000:8000 --restart unless-stopped __ECR_REGISTRY__/__ECR_REPOSITORY__:__IMAGE_TAG__",
+    "docker run -d --name cloudforge-api -p 8000:8000 --restart unless-stopped --log-driver=awslogs --log-opt awslogs-region=__AWS_REGION__ --log-opt awslogs-group=/cloudforge/staging --log-opt awslogs-stream=cloudforge-api __ECR_REGISTRY__/__ECR_REPOSITORY__:__IMAGE_TAG__",
     "for i in $(seq 1 30); do STATUS=$(docker inspect --format='{{.State.Health.Status}}' cloudforge-api); echo \\"Attempt $i/30 - Health: $STATUS\\"; if [ \\"$STATUS\\" = \\"healthy\\" ]; then break; fi; if [ \\"$STATUS\\" = \\"unhealthy\\" ]; then docker logs cloudforge-api; exit 1; fi; sleep 2; done",
     "STATUS=$(docker inspect --format='{{.State.Health.Status}}' cloudforge-api); if [ \\"$STATUS\\" != \\"healthy\\" ]; then docker logs cloudforge-api; exit 1; fi",
     "curl -fsS http://127.0.0.1:8000/health"
