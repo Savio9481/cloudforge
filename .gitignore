@@ -13,3 +13,7 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 incidents/
+
+# Python cache
+__pycache__/
+*.pyc
