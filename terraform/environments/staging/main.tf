@@ -15,7 +15,7 @@ provider "aws" {
   default_tags {
     tags = {
       Project     = "CloudForge"
-      Environment = "dev"
+      Environment = "staging"
       ManagedBy   = "Terraform"
       Owner       = "learning"
       AutoDestroy = "true"
@@ -26,8 +26,8 @@ provider "aws" {
 module "network" {
   source = "../../modules/network"
 
-  environment        = "dev"
-  vpc_cidr           = "10.0.0.0/16"
-  public_subnet_cidr = "10.0.1.0/24"
-  availability_zone  = "us-east-1a"
+  environment        = "staging"
+  vpc_cidr           = "10.1.0.0/16"
+  public_subnet_cidr = "10.1.1.0/24"
+  availability_zone  = "us-east-1b"
 }
