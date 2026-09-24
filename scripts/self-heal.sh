@@ -49,6 +49,7 @@ EOF2
         echo "CloudForge recovery successful."
         cat /tmp/cloudforge-health.json
         echo "Incident record created: $INCIDENT_FILE"
+        /opt/cloudforge/analyzer/run_analyzer.sh
 
         exit 0
     fi
