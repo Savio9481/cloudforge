@@ -14,8 +14,13 @@ resource "aws_instance" "this" {
   }
 
   lifecycle {
-    create_before_destroy = true
-  }
+  create_before_destroy = true
+
+  ignore_changes = [
+    ami,
+    associate_public_ip_address
+  ]
+}
 
   tags = {
     Name = "cloudforge-${var.environment}-ec2"

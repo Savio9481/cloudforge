@@ -31,3 +31,25 @@ resource "aws_iam_instance_profile" "cloudforge_ec2" {
   name = "cloudforge-staging-ec2-profile"
   role = aws_iam_role.cloudforge_ec2.name
 }
+
+resource "aws_iam_role_policy" "cloudwatch_logs" {
+  name = "cloudforge-staging-cloudwatch-logs"
+  role = aws_iam_role.cloudforge_ec2.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+
+    Statement = [
+      {
+        Effect = "Allow"
+
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+
+        Resource = "${aws_cloudwatch_log_group.cloudforge_staging.arn}:*"
+      }
+    ]
+  })
+}
