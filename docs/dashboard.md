@@ -1,0 +1,1272 @@
+# CloudForge Dashboard Guide
+
+This document explains the CloudForge monitoring dashboard, its architecture, backend APIs, deployment, runtime data sources, and verification process.
+
+---
+
+# 1. Purpose
+
+The CloudForge dashboard provides a live operational view of the staging environment.
+
+It brings together:
+
+- Application status
+- Docker container status
+- Container health
+- CPU usage
+- Memory usage
+- Runtime state
+- Latest incidents
+- Recovery information
+- AI incident analysis
+- CloudForge environment information
+
+The dashboard is designed as a monitoring and observability interface rather than as the component responsible for recovery.
+
+---
+
+# 2. Dashboard Architecture
+
+The dashboard uses a separate container from the main CloudForge API.
+
+The architecture is:
+
+```text
+                         Browser
+                            |
+                            |
+                     Port 8080
+                            |
+                            v
+                CloudForge Dashboard
+                     Container
+                            |
+                            v
+                    Dashboard Backend
+                            |
+              +-------------+-------------+
+              |                           |
+              v                           v
+      Runtime Status File          Incident Files
+              |                           |
+              +-------------+-------------+
+                            |
+                            v
+                       Dashboard UI
+````
+
+The main application container remains separate:
+
+```text
+Browser
+   |
+   +---- :8080 ----> Dashboard
+   |
+   +---- :8000 ----> CloudForge API
+```
+
+---
+
+# 3. Separate Dashboard Container
+
+The dashboard runs in:
+
+```text
+cloudforge-dashboard
+```
+
+The main API runs in:
+
+```text
+cloudforge-api
+```
+
+This separation allows the dashboard to be updated independently from the main API.
+
+---
+
+# 4. Dashboard Ports
+
+The dashboard container listens internally on:
+
+```text
+8000
+```
+
+Docker exposes it externally on:
+
+```text
+8080
+```
+
+The mapping is:
+
+```text
+8080 → 8000
+```
+
+Therefore the dashboard URL is:
+
+```text
+http://<EC2-PUBLIC-IP>:8080/dashboard/
+```
+
+---
+
+# 5. Dashboard Project Structure
+
+The dashboard source is located under:
+
+```text
+app/
+├── main.py
+├── services/
+│   ├── docker_service.py
+│   ├── incident_service.py
+│   └── system_service.py
+│
+└── static/
+    ├── index.html
+    ├── style.css
+    └── dashboard.js
+```
+
+---
+
+# 6. Frontend
+
+The frontend consists of:
+
+```text
+static/
+├── index.html
+├── style.css
+└── dashboard.js
+```
+
+### `index.html`
+
+Provides the dashboard structure and UI elements.
+
+### `style.css`
+
+Provides the dashboard visual design, responsive layout, cards, gauges, panels, and status indicators.
+
+### `dashboard.js`
+
+Provides the frontend behavior and live polling.
+
+---
+
+# 7. Backend
+
+The dashboard backend is implemented using FastAPI.
+
+The main application file is:
+
+```text
+app/main.py
+```
+
+The backend exposes dashboard-specific API endpoints.
+
+The dashboard frontend communicates with these endpoints to retrieve current state.
+
+---
+
+# 8. Docker Service
+
+The dashboard backend uses:
+
+```text
+app/services/docker_service.py
+```
+
+This service reads:
+
+```text
+/opt/cloudforge/runtime/status.json
+```
+
+It exposes information such as:
+
+```text
+Container name
+Container status
+Running state
+Health status
+Exit code
+OOM status
+Restart count
+Image
+Start time
+Last update
+```
+
+---
+
+# 9. Runtime Status File
+
+The runtime status publisher writes:
+
+```text
+/opt/cloudforge/runtime/status.json
+```
+
+Example:
+
+```json
+{
+  "container": {
+    "name": "cloudforge-api",
+    "status": "running",
+    "running": true,
+    "health": "healthy",
+    "exit_code": 0,
+    "oom_killed": false,
+    "restart_count": 0,
+    "image": "cloudforge-api",
+    "started_at": "..."
+  },
+  "updated_at": "..."
+}
+```
+
+The actual image name and timestamps depend on the current deployment.
+
+---
+
+# 10. Why the Dashboard Uses a Status File
+
+The dashboard does not need direct Docker control.
+
+Instead:
+
+```text
+Docker
+  ↓
+Status Publisher
+  ↓
+status.json
+  ↓
+Dashboard Backend
+  ↓
+Browser
+```
+
+This provides a read-oriented monitoring architecture.
+
+The dashboard can display container state without being given unrestricted Docker control.
+
+---
+
+# 11. Incident Service
+
+Incident information is provided by:
+
+```text
+app/services/incident_service.py
+```
+
+The service reads incident files from:
+
+```text
+/opt/cloudforge/incidents/
+```
+
+It identifies the latest incident JSON.
+
+It also identifies the latest AI analysis file:
+
+```text
+*-ai.txt
+```
+
+---
+
+# 12. Latest Incident
+
+The dashboard can display the latest incident information.
+
+Typical fields include:
+
+```text
+Incident ID
+Environment
+Application
+Version
+Failure type
+Detected time
+Recovery action
+Recovered time
+Recovery duration
+Recovery status
+Health status
+```
+
+---
+
+# 13. AI Analysis
+
+The dashboard also reads the latest AI analysis generated by the incident analyzer.
+
+The analysis file is:
+
+```text
+/opt/cloudforge/incidents/*-ai.txt
+```
+
+The dashboard displays the report as operational context.
+
+The AI analyzer itself remains separate from the dashboard.
+
+---
+
+# 14. System Metrics
+
+The dashboard backend also provides system metrics.
+
+The service is:
+
+```text
+app/services/system_service.py
+```
+
+It uses `psutil` to collect metrics such as:
+
+```text
+CPU usage
+Memory usage
+Memory used
+Memory total
+Hostname
+Timestamp
+```
+
+---
+
+# 15. Dashboard API
+
+The main dashboard endpoint is:
+
+```text
+/api/dashboard
+```
+
+The endpoint combines:
+
+```text
+Application information
++
+Container information
++
+System metrics
++
+Latest incident
++
+Latest AI analysis
+```
+
+The response is designed to give the frontend most of the information required to render the dashboard.
+
+---
+
+# 16. Container API Endpoint
+
+The backend also exposes:
+
+```text
+/api/container
+```
+
+This endpoint provides the current container state.
+
+The frontend can use it when container-specific information is required.
+
+---
+
+# 17. Dashboard Health
+
+The dashboard container also has a health check.
+
+The Docker health check calls:
+
+```text
+http://127.0.0.1:8000/health
+```
+
+Verify the dashboard container:
+
+```bash
+docker ps --filter name=cloudforge-dashboard
+```
+
+The container should eventually show:
+
+```text
+healthy
+```
+
+---
+
+# 18. Dashboard Dockerfile
+
+The dashboard uses a Python 3.12 slim image.
+
+The basic structure is:
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY main.py .
+COPY services/ ./services/
+COPY static/ ./static/
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')" || exit 1
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+---
+
+# 19. Build the Dashboard Image
+
+On the EC2 instance:
+
+```bash
+cd /opt/cloudforge/app
+```
+
+Build the dashboard image:
+
+```bash
+docker build -t cloudforge-dashboard:1.0.4 .
+```
+
+Verify:
+
+```bash
+docker images | grep cloudforge-dashboard
+```
+
+Use the appropriate version tag when the dashboard source changes.
+
+---
+
+# 20. Start the Dashboard Container
+
+The dashboard needs read-only access to runtime and incident data.
+
+Run:
+
+```bash
+docker run -d \
+  --name cloudforge-dashboard \
+  -p 8080:8000 \
+  -v /opt/cloudforge/runtime:/opt/cloudforge/runtime:ro \
+  -v /opt/cloudforge/incidents:/opt/cloudforge/incidents:ro \
+  --restart unless-stopped \
+  cloudforge-dashboard:1.0.4
+```
+
+---
+
+# 21. Verify the Dashboard Container
+
+Run:
+
+```bash
+docker ps --filter name=cloudforge-dashboard
+```
+
+Expected:
+
+```text
+cloudforge-dashboard
+```
+
+with:
+
+```text
+0.0.0.0:8080->8000/tcp
+```
+
+and eventually:
+
+```text
+healthy
+```
+
+---
+
+# 22. Verify Dashboard HTTP Response
+
+From the EC2 instance:
+
+```bash
+curl -I http://127.0.0.1:8080/dashboard/
+```
+
+Expected:
+
+```text
+HTTP/1.1 200 OK
+```
+
+This confirms that the dashboard is being served.
+
+---
+
+# 23. Open the Dashboard
+
+Find the current EC2 public IP:
+
+```powershell
+aws ec2 describe-instances `
+  --instance-ids <instance-id> `
+  --query "Reservations[0].Instances[0].PublicIpAddress" `
+  --output text
+```
+
+Then open:
+
+```text
+http://<EC2-PUBLIC-IP>:8080/dashboard/
+```
+
+Example:
+
+```text
+http://3.94.206.43:8080/dashboard/
+```
+
+The public IP can change after stopping and starting the EC2 instance.
+
+---
+
+# 24. Security Group
+
+The staging security group must allow the dashboard port:
+
+```text
+8080/TCP
+```
+
+The CloudForge API uses:
+
+```text
+8000/TCP
+```
+
+The Terraform security group configuration manages these rules.
+
+Verify the security group before troubleshooting dashboard connectivity.
+
+---
+
+# 25. Dashboard Data Flow
+
+The live dashboard follows this flow:
+
+```text
+                    EC2
+                     |
+          +----------+----------+
+          |                     |
+          v                     v
+   cloudforge-api       Runtime Publisher
+          |                     |
+          |                     v
+          |              status.json
+          |                     |
+          |                     |
+          +----------+----------+
+                     |
+                     v
+             Dashboard Backend
+                     |
+       +-------------+-------------+
+       |             |             |
+       v             v             v
+   Container      Incident      System
+     State          Data        Metrics
+       |             |             |
+       +-------------+-------------+
+                     |
+                     v
+                Browser UI
+```
+
+---
+
+# 26. Live Polling
+
+The dashboard frontend periodically requests updated data.
+
+The current frontend is designed for live monitoring rather than a one-time snapshot.
+
+The browser periodically calls the dashboard API and updates:
+
+```text
+Container state
+Health state
+CPU
+Memory
+Incident information
+AI analysis
+Runtime information
+```
+
+---
+
+# 27. Dashboard Status States
+
+The dashboard can represent different operational states.
+
+Examples include:
+
+```text
+HEALTHY
+```
+
+```text
+INCIDENT DETECTED
+```
+
+```text
+SELF-HEALING
+```
+
+```text
+RECOVERED
+```
+
+```text
+UNAVAILABLE
+```
+
+The displayed state is derived from the backend/runtime information.
+
+---
+
+# 28. Container State
+
+The dashboard can display the state of:
+
+```text
+cloudforge-api
+```
+
+Important values include:
+
+```text
+Running
+Stopped
+Exited
+Healthy
+Unhealthy
+Restart count
+Exit code
+OOM status
+Image
+```
+
+---
+
+# 29. CPU and Memory
+
+The system service provides:
+
+```text
+CPU percentage
+Memory percentage
+Memory used
+Memory total
+```
+
+These values provide an operational view of the EC2 host.
+
+They should be interpreted as current host metrics rather than historical infrastructure monitoring.
+
+---
+
+# 30. Incident Display
+
+When an incident exists, the dashboard can display information such as:
+
+```text
+Incident ID
+Failure type
+Detected at
+Recovery action
+Recovery duration
+Recovery status
+```
+
+This allows an operator to understand the latest recovery event without logging into the EC2 instance.
+
+---
+
+# 31. AI Analysis Display
+
+The dashboard can display the latest AI report.
+
+The report may contain:
+
+```text
+What happened
+Likely cause
+Impact
+Recovery performed
+Recovery assessment
+Recommended next actions
+```
+
+The dashboard displays the analysis but does not generate it.
+
+The analyzer remains responsible for creating the AI report.
+
+---
+
+# 32. Dashboard and Self-Healing Relationship
+
+The dashboard is not the self-healing engine.
+
+The correct architecture is:
+
+```text
+              Monitoring
+                  |
+                  v
+             Self-Healing
+                  |
+                  v
+             Recovery
+                  |
+                  v
+             Incident JSON
+                  |
+                  v
+          Dashboard reads state
+```
+
+Not:
+
+```text
+Dashboard
+    ↓
+Docker restart
+```
+
+This separation prevents the dashboard from becoming a privileged recovery control surface.
+
+---
+
+# 33. Dashboard Read-Only Design
+
+The dashboard primarily reads:
+
+```text
+Runtime status
+Incident records
+AI reports
+System metrics
+```
+
+It does not require unrestricted Docker socket access.
+
+This is an important security property.
+
+Avoid mounting:
+
+```text
+/var/run/docker.sock
+```
+
+into the dashboard container unless there is a clearly justified and secured requirement.
+
+---
+
+# 34. Testing Live Updates
+
+Start with the dashboard open in the browser.
+
+Then check:
+
+```bash
+docker ps
+```
+
+The dashboard should show the running API container.
+
+Now stop the API intentionally:
+
+```bash
+docker stop cloudforge-api
+```
+
+The monitoring system should eventually detect the failure.
+
+The dashboard should reflect the changed state as the backend status updates.
+
+The self-healing process should then restart the API.
+
+Finally:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+should return:
+
+```json
+{
+  "status": "healthy",
+  "version": "1.0.0"
+}
+```
+
+The dashboard should eventually return to the healthy state.
+
+---
+
+# 35. Dashboard Incident Test
+
+After a chaos test:
+
+```bash
+ls -lt /opt/cloudforge/incidents/
+```
+
+You should see the latest incident.
+
+Example:
+
+```text
+incident-2026-09-28-061731.json
+```
+
+and potentially:
+
+```text
+incident-2026-09-28-061731-ai.txt
+```
+
+Refresh the dashboard.
+
+The latest incident and AI analysis should be available through the dashboard backend.
+
+---
+
+# 36. Troubleshooting
+
+## Dashboard does not open
+
+Check the container:
+
+```bash
+docker ps -a --filter name=cloudforge-dashboard
+```
+
+Check logs:
+
+```bash
+docker logs --tail 100 cloudforge-dashboard
+```
+
+Check locally:
+
+```bash
+curl -I http://127.0.0.1:8080/dashboard/
+```
+
+---
+
+## Dashboard returns connection refused
+
+Check whether port `8080` is listening:
+
+```bash
+sudo ss -lntp | grep :8080
+```
+
+Check Docker port mapping:
+
+```bash
+docker ps --filter name=cloudforge-dashboard
+```
+
+Expected:
+
+```text
+0.0.0.0:8080->8000/tcp
+```
+
+---
+
+## Local dashboard works but browser cannot connect
+
+If:
+
+```bash
+curl -I http://127.0.0.1:8080/dashboard/
+```
+
+works on EC2 but the browser cannot connect, check the AWS Security Group.
+
+Port:
+
+```text
+8080/TCP
+```
+
+must be allowed according to the intended access policy.
+
+---
+
+# 37. Dashboard Shows No Container Data
+
+Check the runtime file:
+
+```bash
+cat /opt/cloudforge/runtime/status.json
+```
+
+If it does not exist, check:
+
+```bash
+sudo systemctl status cloudforge-status-publisher.service
+```
+
+Then:
+
+```bash
+sudo journalctl -u cloudforge-status-publisher.service -n 50
+```
+
+---
+
+# 38. Dashboard Shows No Incident
+
+Check:
+
+```bash
+ls -la /opt/cloudforge/incidents/
+```
+
+If no JSON incident exists, the dashboard has no incident data to display.
+
+Run a controlled chaos test if you need to generate one.
+
+---
+
+# 39. Dashboard Shows No AI Analysis
+
+Check:
+
+```bash
+ls -lt /opt/cloudforge/incidents/*-ai.txt
+```
+
+If there is no AI report:
+
+1. Verify an incident JSON exists.
+2. Verify Gemini configuration.
+3. Verify analyzer dependencies.
+4. Run the analyzer manually.
+
+Example:
+
+```bash
+/opt/cloudforge/analyzer/run_analyzer.sh
+```
+
+---
+
+# 40. Dashboard Container Cannot Read Runtime Data
+
+The dashboard is started with:
+
+```bash
+-v /opt/cloudforge/runtime:/opt/cloudforge/runtime:ro
+```
+
+This provides read-only access.
+
+Verify:
+
+```bash
+docker inspect cloudforge-dashboard
+```
+
+Look for the runtime volume mapping.
+
+Also verify the host file:
+
+```bash
+ls -l /opt/cloudforge/runtime/status.json
+```
+
+---
+
+# 41. Dashboard Container Cannot Read Incident Data
+
+Verify:
+
+```bash
+ls -ld /opt/cloudforge/incidents
+```
+
+and:
+
+```bash
+ls -la /opt/cloudforge/incidents
+```
+
+The dashboard container uses:
+
+```bash
+-v /opt/cloudforge/incidents:/opt/cloudforge/incidents:ro
+```
+
+This prevents the dashboard from modifying incident records.
+
+---
+
+# 42. Dashboard Deployment Update
+
+When dashboard source code changes:
+
+```text
+Source change
+     ↓
+Build new image
+     ↓
+Stop old dashboard
+     ↓
+Remove old container
+     ↓
+Start new dashboard
+     ↓
+Health check
+     ↓
+Browser verification
+```
+
+Example:
+
+```bash
+docker stop cloudforge-dashboard
+docker rm cloudforge-dashboard
+```
+
+Build:
+
+```bash
+docker build -t cloudforge-dashboard:<new-version> .
+```
+
+Start:
+
+```bash
+docker run -d \
+  --name cloudforge-dashboard \
+  -p 8080:8000 \
+  -v /opt/cloudforge/runtime:/opt/cloudforge/runtime:ro \
+  -v /opt/cloudforge/incidents:/opt/cloudforge/incidents:ro \
+  --restart unless-stopped \
+  cloudforge-dashboard:<new-version>
+```
+
+---
+
+# 43. Dashboard Versioning
+
+Use explicit image tags when testing dashboard changes.
+
+Example:
+
+```text
+cloudforge-dashboard:1.0.1
+cloudforge-dashboard:1.0.2
+cloudforge-dashboard:1.0.3
+cloudforge-dashboard:1.0.4
+```
+
+This makes it easier to identify which dashboard version is deployed.
+
+---
+
+# 44. Current Dashboard Example
+
+The CloudForge staging environment was tested with:
+
+```text
+Container:
+cloudforge-dashboard
+
+External port:
+8080
+
+Internal port:
+8000
+
+Image:
+cloudforge-dashboard:1.0.4
+```
+
+The dashboard was verified using:
+
+```bash
+curl -I http://127.0.0.1:8080/dashboard/
+```
+
+with:
+
+```text
+HTTP/1.1 200 OK
+```
+
+---
+
+# 45. Dashboard Security Considerations
+
+The dashboard exposes operational information.
+
+Potentially sensitive information can include:
+
+```text
+Container names
+Image names
+Instance information
+Incident information
+System metrics
+Deployment information
+AI-generated analysis
+```
+
+Therefore the dashboard should not be treated as a completely public application.
+
+Future improvements can include:
+
+```text
+Authentication
+Authorization
+HTTPS
+Reverse proxy
+Private networking
+VPN access
+AWS ALB authentication
+```
+
+---
+
+# 46. Dashboard and CloudForge Architecture
+
+The complete application architecture is:
+
+```text
+                         GitHub
+                           |
+                           v
+                        Jenkins
+                           |
+                           v
+                          ECR
+                           |
+                           v
+                    Staging EC2
+                           |
+            +--------------+--------------+
+            |                             |
+            v                             v
+     cloudforge-api             cloudforge-dashboard
+          :8000                         :8080
+            |                             |
+            v                             |
+      Health endpoint                     |
+            |                             |
+            v                             |
+        Monitoring                        |
+            |                             |
+            v                             |
+       Self-Healing                       |
+            |                             |
+            v                             |
+      Incident JSON                       |
+            |                             |
+            v                             |
+     Gemini Analyzer                      |
+            |                             |
+            +--------------+--------------+
+                           |
+                           v
+                       Dashboard
+```
+
+---
+
+# 47. Final Verification Checklist
+
+Before considering the dashboard deployment complete:
+
+```text
+[ ] Dashboard image built
+[ ] Dashboard container running
+[ ] Port 8080 mapped to container port 8000
+[ ] Docker health check is healthy
+[ ] /dashboard/ returns HTTP 200
+[ ] Runtime status file is available
+[ ] Incident directory is available
+[ ] Latest incident can be displayed
+[ ] Latest AI report can be displayed
+[ ] CPU information is displayed
+[ ] Memory information is displayed
+[ ] Container state updates
+[ ] Dashboard recovers after API self-healing
+```
+
+---
+
+# 48. Summary
+
+The CloudForge dashboard provides a read-oriented operational view of the platform.
+
+It combines:
+
+```text
+Container State
+       +
+Runtime Status
+       +
+System Metrics
+       +
+Incident Evidence
+       +
+AI Analysis
+```
+
+The dashboard is intentionally separated from the self-healing mechanism.
+
+The key design principle is:
+
+```text
+Self-healing controls recovery.
+Dashboard provides visibility.
+AI provides incident analysis.
+```
+
+This separation makes the CloudForge architecture easier to understand, operate, and extend.
+
