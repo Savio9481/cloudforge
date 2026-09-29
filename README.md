@@ -115,7 +115,8 @@ The infrastructure includes:
 - IAM Role
 - IAM Instance Profile
 - AWS Systems Manager integration
-- CloudWatch resources
+
+CloudWatch is used for staging operational logging.
 
 ### Docker Containerization
 
@@ -356,7 +357,12 @@ cloudforge/
 │
 ├── docs/
 │   ├── assets/
-│   │   └── cloudforge-architecture.png
+│   │   ├── cloudforge-architecture.png
+│   │   ├── dashboard-live.png
+│   │   ├── jenkins-pipeline.png
+│   │   ├── self-healing-test.png
+│   │   ├── ai-incident-analysis.png
+│   │   └── load-test.png
 │   ├── architecture.md
 │   ├── setup.md
 │   ├── deployment.md
@@ -385,9 +391,9 @@ There are two ways to use CloudForge.
 
 Use this to clone the repository and run the API and dashboard without creating AWS infrastructure.
 
-**Option 2 — Reproduce the full AWS environment**
+**Option 2 — Reproduce the AWS environment**
 
-Use this to provision AWS infrastructure with Terraform and reproduce the complete CloudForge environment.
+Use this to provision the AWS infrastructure with Terraform and configure the CloudForge platform components.
 
 ---
 
@@ -563,9 +569,9 @@ docker rm cloudforge-dashboard
 
 ---
 
-## Option 2 — Full AWS Setup
+## Option 2 — AWS Setup
 
-The full CloudForge environment requires:
+The AWS environment requires:
 
 - AWS account
 - AWS CLI
@@ -833,11 +839,17 @@ The status contains information such as:
 
 The analyzer uses Google Gemini.
 
-Configure the API key securely on the host. For example:
+Configure the Gemini API key securely on the host.
+
+The key should be stored outside the repository and injected into the analyzer environment.
+
+For example:
 
 ```bash
 export GEMINI_API_KEY="<YOUR_GEMINI_API_KEY>"
 ```
+
+Never commit the real key to GitHub.
 
 Do **not** place the real key in:
 
@@ -1125,14 +1137,97 @@ One 5,000-request private-IP test produced:
 ```text
 Requests:        5000
 Failures:        0
-Duration:        3.45 seconds
-Average latency: 33.56 ms
-Throughput:      1448.67 requests/sec
+Duration:        3.39 seconds
+Average latency: 32.85 ms
+Throughput:      1474.79 requests/sec
 ```
 
 These are measurements from the tested environment and are not universal performance guarantees.
 
 See [`docs/load-testing.md`](docs/load-testing.md).
+
+---
+
+## Project Evidence
+
+The following screenshots demonstrate the implemented CloudForge platform and its operational capabilities.
+
+### CloudForge Architecture
+
+![CloudForge Architecture](docs/assets/cloudforge-architecture.png)
+
+### Live CloudForge Dashboard
+
+![CloudForge Dashboard](docs/assets/dashboard-live.png)
+
+The live dashboard provides visibility into application health, container state, system metrics, runtime information, incidents, recovery activity, and AI-generated incident analysis.
+
+### Jenkins CI/CD Pipeline
+
+![Jenkins CI/CD Pipeline](docs/assets/jenkins-pipeline.png)
+
+The Jenkins pipeline demonstrates the complete deployment workflow:
+
+```text
+GitHub
+   ↓
+Checkout
+   ↓
+Automated Tests
+   ↓
+Docker Build
+   ↓
+Amazon ECR
+   ↓
+AWS Systems Manager
+   ↓
+Staging Deployment
+   ↓
+Health Verification
+```
+
+The captured successful pipeline demonstrates automated testing, Docker image creation, ECR push, SSM-based deployment, and staging health verification.
+
+### Self-Healing Test
+
+![CloudForge Self-Healing](docs/assets/self-healing-test.png)
+
+A controlled container failure was introduced in the staging environment. CloudForge detected the health failure, collected Docker and host evidence, restarted the container, verified recovery, created an incident record, and triggered AI incident analysis.
+
+### AI Incident Analysis
+
+![CloudForge AI Incident Analysis](docs/assets/ai-incident-analysis.png)
+
+The Gemini-powered incident analyzer processes the collected incident evidence and produces a structured analysis covering:
+
+- What happened
+- Likely cause
+- Impact
+- Recovery performed
+- Recovery assessment
+- Recommended next actions
+
+The analyzer is evidence-first and identifies when the available evidence is insufficient to determine an exact root cause.
+
+### Load Test
+
+![CloudForge Load Test](docs/assets/load-test.png)
+
+A controlled staging load test was executed against the CloudForge health endpoint.
+
+Measured result:
+
+```text
+Total requests:       5000
+Concurrency:          50
+Successful:           5000
+Failed:               0
+Total time:           3.39 seconds
+Average response:     32.85 ms
+Requests/second:      1474.79
+```
+
+These measurements represent the tested staging environment and are not universal performance guarantees.
 
 ---
 
