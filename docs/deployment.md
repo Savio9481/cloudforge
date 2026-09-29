@@ -1,284 +1,450 @@
 # CloudForge Deployment Guide
 
-This document explains how to deploy CloudForge after the AWS infrastructure has been created with Terraform.
+This document describes how CloudForge is deployed from source control to the AWS staging environment.
 
-The deployment flow is:
+The primary deployment architecture is:
 
 ```text
-Terraform Infrastructure
-        ↓
-EC2 Instance
-        ↓
-AWS Systems Manager
-        ↓
-CloudForge Repository
-        ↓
+GitHub
+   |
+   v
+Jenkins
+   |
+   v
+Build + Test
+   |
+   v
 Docker Image
-        ↓
+   |
+   v
+Amazon ECR
+   |
+   v
+AWS Systems Manager
+   |
+   v
+Staging EC2
+   |
+   v
 CloudForge API
-        ↓
-Health Check
-        ↓
-Monitoring & Self-Healing
+   |
+   v
+Health Verification
 ````
 
+The dashboard is deployed as a separate container and provides operational visibility into the running environment.
+
 ---
 
-# 1. Deployment Prerequisites
+# 1. Deployment Goals
 
-Before deploying CloudForge, verify that the AWS infrastructure exists.
+The CloudForge deployment process is designed to:
 
-From the staging Terraform directory:
+* Build the application consistently.
+* Run automated tests.
+* Package the API as a Docker image.
+* Push the image to Amazon ECR.
+* Deploy the selected image to the staging EC2 instance.
+* Verify application health after deployment.
+* Keep deployment repeatable through Jenkins.
+* Use AWS Systems Manager instead of requiring SSH as the normal deployment mechanism.
+* Maintain versioned container images for traceability and rollback.
 
-```powershell
-cd terraform\environments\staging
-```
+---
 
-Run:
+# 2. Current Deployment Environment
 
-```powershell
-terraform validate
-```
-
-Then:
-
-```powershell
-terraform plan
-```
-
-If the infrastructure already matches Terraform, the expected result is:
+The documented deployment environment is:
 
 ```text
-No changes. Your infrastructure matches the configuration.
+AWS Region: us-east-1
+Environment: staging
+Compute: Amazon EC2
+Container Runtime: Docker
+Image Registry: Amazon ECR
+Remote Management: AWS Systems Manager
+CI/CD: Jenkins
+Application Port: 8000
+Dashboard Port: 8080
 ```
 
----
-
-# 2. Start the EC2 Instance
-
-If the staging instance is stopped, start it from the local machine.
-
-```powershell
-aws ec2 start-instances --instance-ids <instance-id>
-```
-
-Example:
-
-```powershell
-aws ec2 start-instances --instance-ids i-xxxxxxxxxxxxxxxxx
-```
-
-Check the instance state:
-
-```powershell
-aws ec2 describe-instances `
-  --instance-ids <instance-id> `
-  --query "Reservations[0].Instances[0].State.Name" `
-  --output text
-```
-
-Wait until the result is:
-
-```text
-running
-```
-
----
-
-# 3. Verify Systems Manager
-
-CloudForge uses AWS Systems Manager Session Manager to access the EC2 instance.
-
-Start a session:
-
-```powershell
-aws ssm start-session --target <instance-id>
-```
-
-Example:
-
-```powershell
-aws ssm start-session --target i-xxxxxxxxxxxxxxxxx
-```
-
-If the session opens successfully, the EC2 instance is reachable through SSM.
-
----
-
-# 4. Switch to the CloudForge User
-
-Inside the SSM session:
-
-```bash
-sudo su - ssm-user
-```
-
-Verify:
-
-```bash
-whoami
-```
-
-Expected:
-
-```text
-ssm-user
-```
-
----
-
-# 5. Navigate to the Project
-
-Move to the CloudForge directory:
-
-```bash
-cd /opt/cloudforge
-```
-
-Verify the project:
-
-```bash
-ls -la
-```
-
-Expected directories include:
-
-```text
-app/
-analyzer/
-docs/
-scripts/
-terraform/
-```
-
----
-
-# 6. Update the Source Code
-
-If CloudForge is already cloned on the EC2 instance:
-
-```bash
-cd /opt/cloudforge
-git pull origin main
-```
-
-Verify the current commit:
-
-```bash
-git log -1 --oneline
-```
-
-The commit should correspond to the latest version that is intended to be deployed.
-
----
-
-# 7. Build the Docker Image
-
-Move into the API application:
-
-```bash
-cd /opt/cloudforge/app
-```
-
-Build the image:
-
-```bash
-docker build -t cloudforge-api:1.0.0 .
-```
-
-Verify:
-
-```bash
-docker images | grep cloudforge-api
-```
-
----
-
-# 8. Stop an Existing API Container
-
-If an old CloudForge API container is already running:
-
-```bash
-docker stop cloudforge-api
-```
-
-Remove it:
-
-```bash
-docker rm cloudforge-api
-```
-
-If the container does not exist, Docker may report an error. That is safe to ignore when performing a fresh deployment.
-
----
-
-# 9. Start the CloudForge API
-
-Run:
-
-```bash
-docker run -d \
-  --name cloudforge-api \
-  -p 8000:8000 \
-  --restart unless-stopped \
-  cloudforge-api:1.0.0
-```
-
-Verify:
-
-```bash
-docker ps
-```
-
-Expected:
+The main application container is:
 
 ```text
 cloudforge-api
 ```
 
-with:
+The dashboard runs independently:
 
 ```text
-0.0.0.0:8000->8000/tcp
+cloudforge-dashboard
 ```
 
 ---
 
-# 10. Verify Container Health
+# 3. Deployment Architecture
 
-Check the container:
-
-```bash
-docker ps
-```
-
-The health status should eventually become:
+The current deployment flow is:
 
 ```text
-healthy
-```
-
-You can check directly:
-
-```bash
-docker inspect cloudforge-api \
-  --format '{{.State.Health.Status}}'
-```
-
-Expected:
-
-```text
-healthy
+                         GitHub
+                            |
+                            v
+                    CloudForge source
+                            |
+                            v
+                         Jenkins
+                            |
+                +-----------+-----------+
+                |                       |
+                v                       v
+              Tests               Docker Build
+                                        |
+                                        v
+                                      ECR
+                                        |
+                                        v
+                                      SSM
+                                        |
+                                        v
+                                Staging EC2
+                                        |
+                              +---------+---------+
+                              |                   |
+                              v                   v
+                       cloudforge-api     cloudforge-dashboard
+                           :8000                  :8080
+                              |
+                              v
+                           /health
+                              |
+                              v
+                       Health Verification
 ```
 
 ---
 
-# 11. Verify the Application
+# 4. Source Control
 
-Run the API health endpoint:
+The CloudForge repository is:
+
+```text
+https://github.com/Savio9481/cloudforge.git
+```
+
+The deployment branch is:
+
+```text
+main
+```
+
+Before deployment, Jenkins checks out the selected source revision.
+
+The deployment should always be traceable to a Git commit.
+
+---
+
+# 5. Jenkins Pipeline
+
+The CloudForge CI/CD pipeline is defined by:
+
+```text
+Jenkinsfile
+```
+
+The Jenkins job used by the project is:
+
+```text
+CloudForge-CI-CD
+```
+
+The high-level pipeline is:
+
+```text
+Checkout
+    |
+    v
+Test
+    |
+    v
+Docker Build
+    |
+    v
+ECR Push
+    |
+    v
+SSM Deployment
+    |
+    v
+Health Verification
+```
+
+---
+
+# 6. Checkout Stage
+
+Jenkins retrieves the CloudForge source code from GitHub.
+
+The basic flow is:
+
+```text
+GitHub
+   |
+   v
+Jenkins Workspace
+```
+
+The deployment is performed from the checked-out source revision rather than from manually modified application files on EC2.
+
+---
+
+# 7. Test Stage
+
+Before deployment, the application should pass its automated tests.
+
+The application includes testing dependencies such as:
+
+```text
+pytest
+httpx
+```
+
+The test stage prevents an invalid application build from proceeding directly to deployment.
+
+The exact commands are maintained in the project's `Jenkinsfile`.
+
+---
+
+# 8. Docker Build Stage
+
+The CloudForge API source is located under:
+
+```text
+app/
+```
+
+A local equivalent of the Docker build is:
 
 ```bash
-curl http://127.0.0.1:8000/health
+docker build -t cloudforge-api:local ./app
+```
+
+Jenkins performs the equivalent build as part of the CI/CD pipeline.
+
+---
+
+# 9. Image Tagging
+
+CloudForge uses versioned image tags.
+
+An example verified deployment image is:
+
+```text
+595319278112.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:195bc75
+```
+
+The tag:
+
+```text
+195bc75
+```
+
+identifies a specific application build/commit.
+
+Using versioned tags makes it easier to identify exactly which image is running.
+
+---
+
+# 10. Amazon ECR
+
+The CloudForge API image is stored in Amazon Elastic Container Registry.
+
+Repository:
+
+```text
+595319278112.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api
+```
+
+The flow is:
+
+```text
+Jenkins
+   |
+   v
+Docker Build
+   |
+   v
+ECR Authentication
+   |
+   v
+Docker Push
+   |
+   v
+ECR Repository
+```
+
+---
+
+# 11. ECR Authentication
+
+An appropriately permissioned AWS environment can authenticate with ECR using:
+
+```bash
+aws ecr get-login-password --region us-east-1 | \
+docker login --username AWS --password-stdin \
+595319278112.dkr.ecr.us-east-1.amazonaws.com
+```
+
+Expected result:
+
+```text
+Login Succeeded
+```
+
+Credentials must never be written into the Jenkinsfile or committed to GitHub.
+
+---
+
+# 12. Push Image to ECR
+
+The general manual workflow is:
+
+```bash
+docker build -t cloudforge-api:<tag> ./app
+```
+
+Tag the image:
+
+```bash
+docker tag cloudforge-api:<tag> \
+595319278112.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:<tag>
+```
+
+Push:
+
+```bash
+docker push \
+595319278112.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:<tag>
+```
+
+In the normal CloudForge workflow, Jenkins performs these operations.
+
+---
+
+# 13. Deployment Through AWS Systems Manager
+
+CloudForge uses AWS Systems Manager to deploy to the staging EC2 instance.
+
+The architecture is:
+
+```text
+Jenkins
+   |
+   v
+AWS Systems Manager
+   |
+   v
+Staging EC2
+```
+
+This avoids requiring public SSH access as the normal deployment mechanism.
+
+The EC2 instance must have the appropriate SSM IAM instance profile.
+
+---
+
+# 14. EC2 Deployment Target
+
+The staging EC2 instance runs:
+
+```text
+Docker
+CloudForge API
+CloudForge Dashboard
+Monitoring
+Self-Healing
+Runtime Status Publisher
+AI Incident Analyzer
+```
+
+The API deployment affects:
+
+```text
+cloudforge-api
+```
+
+The dashboard is deployed separately from:
+
+```text
+dashboard/
+```
+
+---
+
+# 15. Deployment Sequence on EC2
+
+The API deployment conceptually follows:
+
+```text
+Receive deployment command
+        |
+        v
+Authenticate to ECR
+        |
+        v
+Pull selected image
+        |
+        v
+Stop/replace existing API container
+        |
+        v
+Start new container
+        |
+        v
+Wait for health
+        |
+        v
+Verify /health
+        |
+        v
+Deployment complete
+```
+
+The exact deployment commands are maintained in the project's `Jenkinsfile`.
+
+---
+
+# 16. Current API Container
+
+The staging API container is:
+
+```text
+cloudforge-api
+```
+
+The container listens on:
+
+```text
+8000
+```
+
+The host mapping is:
+
+```text
+EC2 :8000
+    |
+    v
+Container :8000
+```
+
+---
+
+# 17. Deployment Health Check
+
+After deployment, CloudForge verifies:
+
+```text
+http://127.0.0.1:8000/health
 ```
 
 Expected response:
@@ -290,352 +456,24 @@ Expected response:
 }
 ```
 
-This confirms that:
+A deployment is not considered complete merely because Docker successfully started the container.
 
-```text
-Docker
-   ↓
-Uvicorn
-   ↓
-FastAPI
-   ↓
-/health
-```
-
-is working.
+The application health endpoint must respond successfully.
 
 ---
 
-# 12. Verify Container Logs
+# 18. Manual Deployment Verification
 
-Check the latest logs:
-
-```bash
-docker logs --tail 50 cloudforge-api
-```
-
-For live logs:
+If verification is performed directly on EC2:
 
 ```bash
-docker logs -f cloudforge-api
+docker ps --filter name=cloudforge-api
 ```
 
-Press:
-
-```text
-Ctrl + C
-```
-
-to stop following the logs.
-
----
-
-# 13. Verify Docker Restart Policy
-
-CloudForge uses:
-
-```text
-unless-stopped
-```
-
-Check:
+Check recent logs:
 
 ```bash
-docker inspect cloudforge-api \
-  --format '{{.HostConfig.RestartPolicy.Name}}'
-```
-
-Expected:
-
-```text
-unless-stopped
-```
-
-This allows Docker to restart the application after Docker/host-level restarts in normal circumstances.
-
----
-
-# 14. Verify CloudForge Monitoring
-
-CloudForge's health-check script is:
-
-```text
-/opt/cloudforge/scripts/health-check.sh
-```
-
-Run it manually:
-
-```bash
-/opt/cloudforge/scripts/health-check.sh
-```
-
-Expected:
-
-```text
-CloudForge health check: HEALTHY
-```
-
-The API health response should also be displayed.
-
----
-
-# 15. Verify the Monitoring Service
-
-Check:
-
-```bash
-sudo systemctl status cloudforge-monitor.service
-```
-
-The service should be:
-
-```text
-active (running)
-```
-
-The monitoring loop periodically executes the health check.
-
-Its basic flow is:
-
-```text
-Health Check
-     ↓
-Healthy?
-  /       \
-Yes        No
- |          |
-Continue   Self-Healing
-              ↓
-        Restart Container
-              ↓
-        Check Health Again
-```
-
----
-
-# 16. Verify Runtime Status Publisher
-
-Check:
-
-```bash
-sudo systemctl status cloudforge-status-publisher.service
-```
-
-Expected:
-
-```text
-active (running)
-```
-
-The service continuously publishes container state to:
-
-```text
-/opt/cloudforge/runtime/status.json
-```
-
-Check the file:
-
-```bash
-cat /opt/cloudforge/runtime/status.json
-```
-
-Important fields include:
-
-```text
-status
-running
-health
-exit_code
-oom_killed
-restart_count
-image
-started_at
-```
-
----
-
-# 17. Deploying Through ECR
-
-CloudForge also supports deployment using Amazon ECR.
-
-The ECR repository is:
-
-```text
-cloudforge-api
-```
-
-The repository URI follows:
-
-```text
-<account-id>.dkr.ecr.<region>.amazonaws.com/cloudforge-api
-```
-
-Example:
-
-```text
-595319278112.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api
-```
-
----
-
-# 18. Authenticate Docker With ECR
-
-From a machine that has AWS CLI permissions:
-
-```bash
-aws ecr get-login-password --region us-east-1 | \
-docker login \
---username AWS \
---password-stdin \
-<account-id>.dkr.ecr.us-east-1.amazonaws.com
-```
-
-Example:
-
-```bash
-aws ecr get-login-password --region us-east-1 | \
-docker login \
---username AWS \
---password-stdin \
-595319278112.dkr.ecr.us-east-1.amazonaws.com
-```
-
-Expected:
-
-```text
-Login Succeeded
-```
-
----
-
-# 19. Tag the Docker Image
-
-Tag the local image:
-
-```bash
-docker tag cloudforge-api:1.0.0 \
-<account-id>.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:<tag>
-```
-
-Example:
-
-```bash
-docker tag cloudforge-api:1.0.0 \
-595319278112.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:latest
-```
-
-For CI/CD deployments, CloudForge uses commit-based image tags.
-
-Example:
-
-```text
-195bc75
-```
-
-This makes it possible to identify which Git commit produced a container image.
-
----
-
-# 20. Push the Image to ECR
-
-Run:
-
-```bash
-docker push \
-<account-id>.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:<tag>
-```
-
-Example:
-
-```bash
-docker push \
-595319278112.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:latest
-```
-
-Verify the repository:
-
-```bash
-aws ecr describe-images \
-  --repository-name cloudforge-api \
-  --region us-east-1
-```
-
----
-
-# 21. Deploy an ECR Image
-
-On the staging EC2 instance, authenticate with ECR:
-
-```bash
-aws ecr get-login-password --region us-east-1 | \
-docker login \
---username AWS \
---password-stdin \
-<account-id>.dkr.ecr.us-east-1.amazonaws.com
-```
-
-Pull the required image:
-
-```bash
-docker pull \
-<account-id>.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:<tag>
-```
-
-Example:
-
-```bash
-docker pull \
-595319278112.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:195bc75
-```
-
----
-
-# 22. Stop the Previous Container
-
-Before deploying the new image:
-
-```bash
-docker stop cloudforge-api
-```
-
-Then:
-
-```bash
-docker rm cloudforge-api
-```
-
----
-
-# 23. Start the New Image
-
-Run:
-
-```bash
-docker run -d \
-  --name cloudforge-api \
-  -p 8000:8000 \
-  --restart unless-stopped \
-  <account-id>.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:<tag>
-```
-
-Example:
-
-```bash
-docker run -d \
-  --name cloudforge-api \
-  -p 8000:8000 \
-  --restart unless-stopped \
-  595319278112.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:195bc75
-```
-
----
-
-# 24. Verify the Deployment
-
-Check:
-
-```bash
-docker ps
+docker logs --tail 100 cloudforge-api
 ```
 
 Then:
@@ -653,98 +491,298 @@ Expected:
 }
 ```
 
-Check the image:
+---
+
+# 19. Verify the Running Image
+
+Run:
 
 ```bash
 docker inspect cloudforge-api \
   --format '{{.Config.Image}}'
 ```
 
-This confirms which image is currently deployed.
+This displays the image currently used by the container.
+
+For the documented deployment example:
+
+```text
+595319278112.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:195bc75
+```
 
 ---
 
-# 25. Deployment Verification Sequence
+# 20. Verify Container Health
 
-Every deployment should finish with these checks:
-
-```bash
-docker ps
-```
+Run:
 
 ```bash
 docker inspect cloudforge-api \
   --format '{{.State.Health.Status}}'
 ```
 
+Expected:
+
+```text
+healthy
+```
+
+Also:
+
+```bash
+docker ps --filter name=cloudforge-api
+```
+
+The container should be running and healthy.
+
+---
+
+# 21. Deployment Verification Through the Dashboard
+
+The CloudForge dashboard exposes:
+
+```text
+/api/dashboard
+```
+
+The response contains operational information such as:
+
+```text
+Application
+Environment
+Container
+Health
+Image
+System metrics
+Latest incident
+AI analysis
+Timestamp
+```
+
+This provides a second operational view of the deployment.
+
+---
+
+# 22. Runtime Status
+
+CloudForge maintains current runtime state in:
+
+```text
+/opt/cloudforge/runtime/status.json
+```
+
+Check:
+
+```bash
+cat /opt/cloudforge/runtime/status.json
+```
+
+The status includes information such as:
+
+```text
+Container name
+Container status
+Running state
+Health
+Exit code
+OOM state
+Restart count
+Image
+Start time
+Updated time
+```
+
+The image reported here should correspond to the deployed version.
+
+---
+
+# 23. Deployment and Monitoring
+
+Monitoring continues independently after deployment.
+
+The relationship is:
+
+```text
+Deployment
+    |
+    v
+Health Verification
+    |
+    v
+Monitoring
+    |
+    v
+Continuous Health Checks
+```
+
+If a later runtime failure occurs, the CloudForge self-healing workflow handles recovery.
+
+---
+
+# 24. Deployment and Self-Healing
+
+Deployment and self-healing have different responsibilities.
+
+### Jenkins
+
+```text
+Build
+Test
+Package
+Deploy
+Verify
+```
+
+### Self-Healing
+
+```text
+Detect runtime failure
+Collect evidence
+Recover container
+Verify health
+Create incident
+Run AI analysis
+```
+
+Self-healing is not a replacement for CI/CD.
+
+Jenkins is not the runtime monitoring engine.
+
+---
+
+# 25. Deployment Failure
+
+If the new container fails health verification:
+
+```text
+Deployment
+    |
+    v
+Container starts
+    |
+    v
+Health check fails
+    |
+    v
+Deployment verification fails
+```
+
+Inspect:
+
+```bash
+docker ps -a
+```
+
+Then:
+
+```bash
+docker logs --tail 100 cloudforge-api
+```
+
+And:
+
 ```bash
 curl http://127.0.0.1:8000/health
 ```
 
-```bash
-docker logs --tail 50 cloudforge-api
-```
-
-Expected state:
+Determine whether the issue is related to:
 
 ```text
-Container: RUNNING
-Health:    HEALTHY
-API:       HTTP 200
-Logs:      No deployment errors
+Application
+Docker
+Configuration
+Image
+Dependency
+Infrastructure
+Network
 ```
 
 ---
 
-# 26. Dashboard Deployment
+# 26. Deployment Logs
 
-CloudForge uses a separate dashboard container.
-
-Container name:
-
-```text
-cloudforge-dashboard
-```
-
-The dashboard is exposed on:
-
-```text
-8080
-```
-
-The dashboard application listens internally on:
-
-```text
-8000
-```
-
-Therefore the Docker mapping is:
-
-```text
-8080 → 8000
-```
-
----
-
-# 27. Build the Dashboard
-
-The dashboard is part of the CloudForge application.
-
-Build the dashboard image:
+For application-level problems:
 
 ```bash
-docker build -t cloudforge-dashboard:1.0.4 .
+docker logs --tail 100 cloudforge-api
 ```
 
-Use the appropriate build directory and version tag for the current dashboard source.
+For the status publisher:
+
+```bash
+sudo journalctl -u cloudforge-status-publisher.service -n 50
+```
+
+For monitoring/self-healing:
+
+```bash
+sudo journalctl -u cloudforge-monitor.service -n 100
+```
+
+For CI/CD problems, inspect the Jenkins console output for:
+
+```text
+CloudForge-CI-CD
+```
 
 ---
 
-# 28. Start the Dashboard
+# 27. Deployment Evidence
 
-The dashboard container requires read-only access to runtime and incident information.
+A successful deployment should provide evidence at multiple levels:
 
-Example:
+```text
+Jenkins
+    |
+    +--> Build passed
+
+ECR
+    |
+    +--> Image exists
+
+EC2
+    |
+    +--> Container running
+
+Docker
+    |
+    +--> Container healthy
+
+Application
+    |
+    +--> /health returns healthy
+
+Runtime
+    |
+    +--> status.json updated
+
+Dashboard
+    |
+    +--> Current state visible
+```
+
+This is stronger than relying on a single deployment check.
+
+---
+
+# 28. Dashboard Deployment
+
+The dashboard is a separate container.
+
+The current verified dashboard image is:
+
+```text
+cloudforge-dashboard:1.0.5
+```
+
+Build it from the repository root:
+
+```bash
+cd /opt/cloudforge
+docker build -t cloudforge-dashboard:1.0.5 ./dashboard
+```
+
+Start it:
 
 ```bash
 docker run -d \
@@ -753,12 +791,14 @@ docker run -d \
   -v /opt/cloudforge/runtime:/opt/cloudforge/runtime:ro \
   -v /opt/cloudforge/incidents:/opt/cloudforge/incidents:ro \
   --restart unless-stopped \
-  cloudforge-dashboard:1.0.4
+  cloudforge-dashboard:1.0.5
 ```
+
+The dashboard reads runtime and incident information through read-only mounts.
 
 ---
 
-# 29. Verify the Dashboard
+# 29. Dashboard Verification
 
 Check:
 
@@ -766,7 +806,7 @@ Check:
 docker ps --filter name=cloudforge-dashboard
 ```
 
-Verify locally:
+Then:
 
 ```bash
 curl -I http://127.0.0.1:8080/dashboard/
@@ -778,129 +818,353 @@ Expected:
 HTTP/1.1 200 OK
 ```
 
-From a browser:
+Check live dashboard data:
+
+```bash
+curl -s http://127.0.0.1:8080/api/dashboard
+```
+
+---
+
+# 30. Public Dashboard Access
+
+Find the current EC2 public IP:
+
+```powershell
+aws ec2 describe-instances `
+  --instance-ids <instance-id> `
+  --query "Reservations[0].Instances[0].PublicIpAddress" `
+  --output text
+```
+
+Open:
 
 ```text
 http://<EC2-PUBLIC-IP>:8080/dashboard/
 ```
 
+Do not permanently document a public IP because the address may change after the instance is stopped and started.
+
 ---
 
-# 30. Deployment Architecture
+# 31. Deployment Versioning
 
-The deployed CloudForge staging environment looks like:
+CloudForge uses explicit image tags.
+
+Example:
 
 ```text
-                         AWS
-                          |
-                     VPC / Subnet
-                          |
-                     EC2 Instance
-                          |
-             +------------+------------+
-             |                         |
-       cloudforge-api          cloudforge-dashboard
-          :8000                      :8080
-             |                         |
-             |                         |
-        Health Check              Dashboard API
-             |
-       Monitor Service
-             |
-       Self-Healing
-             |
-       Incident JSON
-             |
-       Gemini Analyzer
+cloudforge-api:195bc75
 ```
 
----
-
-# 31. CI/CD Deployment
-
-The preferred automated deployment flow is:
+Full image:
 
 ```text
-Developer
-    |
-    | git push
-    v
-GitHub
-    |
-    v
-Jenkins
-    |
-    +--> Build
-    |
-    +--> Test
-    |
-    +--> Docker Build
-    |
-    +--> Push to ECR
-    |
-    +--> Deploy through SSM
-    |
-    +--> Health Check
-    |
-    v
-Staging EC2
+595319278112.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:195bc75
 ```
 
-The Jenkins pipeline is responsible for automating the deployment process.
-
-Detailed Jenkins instructions are documented in:
+The current dashboard image is:
 
 ```text
-docs/ci-cd.md
+cloudforge-dashboard:1.0.5
+```
+
+Versioned images make deployment state easier to identify.
+
+---
+
+# 32. Deployment Traceability
+
+A deployment can be traced through:
+
+```text
+Git Commit
+    |
+    v
+Jenkins Build
+    |
+    v
+Docker Image Tag
+    |
+    v
+ECR Image
+    |
+    v
+EC2 Container
+```
+
+For example:
+
+```text
+Git commit
+    ↓
+195bc75
+    ↓
+cloudforge-api:195bc75
+    ↓
+ECR
+    ↓
+cloudforge-api
+```
+
+This makes it easier to determine which build is currently deployed.
+
+---
+
+# 33. Rollback
+
+Versioned ECR images provide a foundation for rollback.
+
+For example:
+
+```text
+Current:
+cloudforge-api:<new-tag>
+
+Previous:
+cloudforge-api:<previous-tag>
+```
+
+A previous known-good image can be deployed again if required.
+
+However, **fully automated rollback is not currently implemented as an automatic self-healing action**.
+
+It should therefore not be described as an active automated feature.
+
+---
+
+# 34. Manual Rollback Process
+
+A rollback conceptually follows:
+
+```text
+Identify previous known-good image
+        |
+        v
+Verify image exists in ECR
+        |
+        v
+Deploy previous image
+        |
+        v
+Wait for health
+        |
+        v
+Verify application
+        |
+        v
+Record result
+```
+
+The deployment should use the same controlled Jenkins/SSM deployment mechanism where possible.
+
+---
+
+# 35. Deployment vs Runtime Recovery
+
+These workflows are separate.
+
+### Deployment
+
+```text
+New Version
+    |
+    v
+Build
+    |
+    v
+Test
+    |
+    v
+Deploy
+    |
+    v
+Verify
+```
+
+### Runtime Recovery
+
+```text
+Existing Version
+    |
+    v
+Failure
+    |
+    v
+Detect
+    |
+    v
+Recover
+    |
+    v
+Verify
+```
+
+CloudForge implements these as separate operational workflows.
+
+---
+
+# 36. Jenkins Responsibilities
+
+Jenkins is responsible for:
+
+```text
+Source checkout
+Automated tests
+Docker build
+ECR push
+SSM deployment
+Deployment health verification
+```
+
+Jenkins is not responsible for continuous runtime monitoring.
+
+---
+
+# 37. Self-Healing Responsibilities
+
+The self-healing system is responsible for:
+
+```text
+Health monitoring
+Failure detection
+Docker evidence collection
+Host evidence collection
+Container recovery
+Health verification
+Incident creation
+AI analyzer invocation
+```
+
+This allows CloudForge to recover certain runtime failures without requiring a new Jenkins build.
+
+---
+
+# 38. Incident Creation
+
+When self-healing detects a failed application:
+
+```text
+Health Check
+    |
+    v
+Failure
+    |
+    v
+Docker Evidence
+    |
+    v
+Host Evidence
+    |
+    v
+Recovery
+    |
+    v
+Health Verification
+    |
+    v
+Incident JSON
+```
+
+Incident records are stored under:
+
+```text
+/opt/cloudforge/incidents/
 ```
 
 ---
 
-# 32. Deployment Failure Handling
+# 39. AI Analysis
 
-If a deployment fails, do not immediately destroy the infrastructure.
+After an incident record is created, the AI analyzer can generate:
 
-First inspect:
-
-### Container
-
-```bash
-docker ps -a
+```text
+incident-<timestamp>-ai.txt
 ```
 
-### Logs
+The analyzer provides analysis covering:
 
-```bash
-docker logs --tail 100 cloudforge-api
+```text
+What happened
+Likely cause
+Impact
+Recovery performed
+Recovery assessment
+Recommended next actions
 ```
 
-### Health
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-### Docker health
-
-```bash
-docker inspect cloudforge-api \
-  --format '{{.State.Health.Status}}'
-```
-
-### Image
-
-```bash
-docker inspect cloudforge-api \
-  --format '{{.Config.Image}}'
-```
+The analyzer uses the incident evidence and should clearly distinguish confirmed facts from uncertain conclusions.
 
 ---
 
-# 33. Common Deployment Problems
+# 40. CloudWatch
 
-## Container does not start
+CloudWatch provides additional observability.
+
+The project uses the documented staging log group:
+
+```text
+/cloudforge/staging
+```
+
+Verify log groups with:
+
+```powershell
+aws logs describe-log-groups `
+  --log-group-name-prefix /cloudforge
+```
+
+CloudWatch complements the application-level health checks and incident evidence.
+
+---
+
+# 41. Deployment Troubleshooting
+
+## Jenkins Build Fails
 
 Check:
+
+```text
+Jenkins console output
+Git checkout
+Application tests
+Docker build
+AWS credentials
+```
+
+---
+
+## ECR Push Fails
+
+Check:
+
+```text
+AWS region
+ECR repository
+IAM permissions
+ECR authentication
+Docker image tag
+```
+
+---
+
+## SSM Deployment Fails
+
+Check:
+
+```text
+EC2 instance state
+SSM agent
+IAM instance profile
+Network connectivity
+SSM command output
+```
+
+---
+
+## Container Does Not Start
+
+Run:
 
 ```bash
 docker ps -a
@@ -909,45 +1173,20 @@ docker ps -a
 Then:
 
 ```bash
-docker logs cloudforge-api
+docker logs --tail 100 cloudforge-api
 ```
 
 ---
 
-## Port 8000 is already in use
-
-Check:
-
-```bash
-sudo ss -lntp | grep :8000
-```
-
-Also check:
-
-```bash
-docker ps
-```
-
-If an old CloudForge container is using the port:
-
-```bash
-docker stop cloudforge-api
-docker rm cloudforge-api
-```
-
-Then deploy again.
-
----
-
-## Health check fails
+## Container Starts but Is Unhealthy
 
 Run:
 
 ```bash
-curl -v http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/health
 ```
 
-Then inspect:
+Then:
 
 ```bash
 docker logs --tail 100 cloudforge-api
@@ -955,94 +1194,405 @@ docker logs --tail 100 cloudforge-api
 
 ---
 
-## ECR pull fails
+## Dashboard Shows Old State
 
-Verify AWS identity:
-
-```bash
-aws sts get-caller-identity
-```
-
-Verify the ECR repository:
+Check:
 
 ```bash
-aws ecr describe-repositories \
-  --repository-names cloudforge-api \
-  --region us-east-1
+cat /opt/cloudforge/runtime/status.json
 ```
 
-Then authenticate again:
+Then:
 
 ```bash
-aws ecr get-login-password --region us-east-1 | \
-docker login \
---username AWS \
---password-stdin \
-<account-id>.dkr.ecr.us-east-1.amazonaws.com
+docker inspect cloudforge-api \
+  --format '{{.Config.Image}}'
 ```
+
+The status publisher may need a short interval to publish the updated state.
 
 ---
 
-# 34. Post-Deployment Checklist
+# 42. Deployment Verification Checklist
 
-After every deployment:
+After every staging deployment:
 
 ```text
-[ ] Git commit identified
+[ ] Jenkins build succeeded
+[ ] Automated tests passed
 [ ] Docker image built
-[ ] Image pushed to ECR if using ECR
-[ ] Correct image pulled
-[ ] Old container stopped
-[ ] New container started
-[ ] Container is running
+[ ] Image pushed to ECR
+[ ] Correct image tag exists
+[ ] SSM deployment succeeded
+[ ] cloudforge-api container is running
 [ ] Container is healthy
-[ ] /health returns HTTP 200
-[ ] Docker logs checked
-[ ] Monitoring service running
+[ ] /health returns healthy
 [ ] Runtime status updated
-[ ] Dashboard accessible
+[ ] Dashboard shows current state
 ```
 
 ---
 
-# 35. Final Deployment State
+# 43. Complete Deployment Verification
 
-A successful CloudForge deployment should result in:
+Run:
+
+```bash
+docker ps --filter name=cloudforge-api
+```
+
+Then:
+
+```bash
+docker inspect cloudforge-api \
+  --format '{{.State.Health.Status}}'
+```
+
+Then:
+
+```bash
+docker inspect cloudforge-api \
+  --format '{{.Config.Image}}'
+```
+
+Then:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Then:
+
+```bash
+cat /opt/cloudforge/runtime/status.json
+```
+
+Finally:
+
+```bash
+curl -s http://127.0.0.1:8080/api/dashboard
+```
+
+Together these verify:
+
+```text
+Container
+Health
+Image
+Application
+Runtime state
+Dashboard
+```
+
+---
+
+# 44. Deployment Lifecycle
+
+The complete CloudForge deployment lifecycle is:
+
+```text
+Developer Commit
+       |
+       v
+GitHub
+       |
+       v
+Jenkins
+       |
+       +--> Checkout
+       |
+       +--> Test
+       |
+       +--> Docker Build
+       |
+       +--> ECR Push
+       |
+       v
+AWS Systems Manager
+       |
+       v
+Staging EC2
+       |
+       v
+CloudForge API
+       |
+       v
+Health Verification
+       |
+       v
+Monitoring
+       |
+       v
+Operational Runtime
+```
+
+---
+
+# 45. Relationship With the Dashboard
+
+The dashboard does not replace deployment verification.
+
+Instead:
+
+```text
+Jenkins
+    → verifies the CI/CD workflow
+
+Health Endpoint
+    → verifies the application
+
+Runtime Publisher
+    → publishes current state
+
+Dashboard
+    → visualizes current state
+```
+
+This gives CloudForge multiple levels of verification.
+
+---
+
+# 46. Reproducibility
+
+The deployment process is designed to be reproducible.
+
+Important source-controlled components include:
+
+```text
+Jenkinsfile
+app/
+dashboard/
+analyzer/
+scripts/
+tests/
+terraform/
+docs/
+```
+
+The deployment host should not be treated as the source of truth for application code.
+
+The intended source of truth is:
 
 ```text
 GitHub
-   |
-   v
-Docker Image
-   |
-   v
-ECR
-   |
-   v
-Staging EC2
-   |
-   +-----------------------+
-   |                       |
-   v                       v
-CloudForge API       CloudForge Dashboard
-   |                       |
-   v                       v
-Health Check          Live Status
-   |
-   v
-Monitor
-   |
-   v
-Self-Healing
-   |
-   v
-Incident Evidence
-   |
-   v
-AI Analyzer
 ```
 
-The deployment is considered successful only after the application health check confirms that the new container is healthy.
+---
+
+# 47. Current Verified Deployment Example
+
+A verified API image used by the staging environment is:
+
+```text
+595319278112.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:195bc75
+```
+
+The staging API container is:
+
+```text
+cloudforge-api
+```
+
+The application listens on:
+
+```text
+8000
+```
+
+The dashboard uses:
+
+```text
+cloudforge-dashboard:1.0.5
+```
+
+and host port:
+
+```text
+8080
+```
+
+These values describe the verified project state and may change in future deployments.
+
+---
+
+# 48. Cost-Conscious Deployment
+
+CloudForge is a learning/staging project.
+
+When deployment and verification are complete, stop the EC2 instance if it is no longer required:
+
+```powershell
+aws ec2 stop-instances --instance-ids <instance-id>
+```
+
+Verify:
+
+```powershell
+aws ec2 describe-instances `
+  --instance-ids <instance-id> `
+  --query "Reservations[0].Instances[0].State.Name" `
+  --output text
+```
+
+Expected:
+
+```text
+stopped
+```
+
+The public IP may change when the instance is started again.
+
+---
+
+# 49. Implemented vs Future Deployment Features
+
+CloudForge currently implements:
+
+```text
+GitHub source control
+Jenkins CI/CD
+Docker image build
+Amazon ECR
+AWS Systems Manager deployment
+EC2 staging deployment
+Health verification
+Versioned container images
+```
+
+Future deployment extensions may include:
+
+```text
+Automated rollback
+Application Load Balancer
+Blue/green deployment
+Canary deployment
+Advanced deployment policies
+Policy-driven remediation
+```
+
+These should only be described as implemented after they are actually added and verified.
+
+---
+
+# 50. Final Deployment Architecture
+
+```text
+                         +----------------+
+                         |    Developer   |
+                         +-------+--------+
+                                 |
+                                 v
+                         +----------------+
+                         |     GitHub     |
+                         +-------+--------+
+                                 |
+                                 v
+                         +----------------+
+                         |    Jenkins     |
+                         +-------+--------+
+                                 |
+                 +---------------+---------------+
+                 |                               |
+                 v                               v
+              Tests                         Docker Build
+                                                 |
+                                                 v
+                                           +-------------+
+                                           |     ECR     |
+                                           +------+------+
+                                                  |
+                                                  v
+                                           +-------------+
+                                           |     SSM     |
+                                           +------+------+
+                                                  |
+                                                  v
+                                      +-----------+-----------+
+                                      |      Staging EC2      |
+                                      |                       |
+                                      |  +-----------------+  |
+                                      |  | cloudforge-api  |  |
+                                      |  |      :8000      |  |
+                                      |  +--------+--------+  |
+                                      |           |           |
+                                      |           v           |
+                                      |       /health         |
+                                      |           |           |
+                                      |           v           |
+                                      |      Monitoring       |
+                                      |           |           |
+                                      |           v           |
+                                      |     Self-Healing      |
+                                      |                       |
+                                      |  +-----------------+  |
+                                      |  | dashboard       |  |
+                                      |  |      :8080      |  |
+                                      |  +-----------------+  |
+                                      +-----------+-----------+
+                                                  |
+                                                  v
+                                               Browser
+```
+
+---
+
+# 51. Final Summary
+
+CloudForge follows a repeatable DevOps deployment workflow:
+
+```text
+Code
+  ↓
+GitHub
+  ↓
+Jenkins
+  ↓
+Test
+  ↓
+Docker Build
+  ↓
+Amazon ECR
+  ↓
+AWS Systems Manager
+  ↓
+EC2
+  ↓
+Health Verification
+  ↓
+Monitoring
+  ↓
+Operational Runtime
+```
+
+The responsibilities are separated clearly:
+
+```text
+Jenkins
+    → delivers the application
+
+ECR
+    → stores versioned images
+
+SSM
+    → executes deployment commands
+
+EC2/Docker
+    → runs the application
+
+Health Check
+    → verifies the deployment
+
+Self-Healing
+    → handles certain runtime failures
+
+AI Analyzer
+    → analyzes incident evidence
+
+Dashboard
+    → provides operational visibility
+```
+
+This deployment architecture makes CloudForge reproducible, traceable, and suitable for demonstrating AWS DevOps/SRE practices in a portfolio environment.
 
 ```
 ```

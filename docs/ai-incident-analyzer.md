@@ -1,126 +1,183 @@
 # CloudForge AI Incident Analyzer
 
-This document explains how the CloudForge AI Incident Analyzer works, how it is configured, how it processes incident evidence, and how to verify its output.
+CloudForge includes an AI-assisted incident analysis component that analyzes evidence collected during runtime failures.
+
+The analyzer is designed to help answer:
+
+- What happened?
+- What evidence was collected?
+- What is the likely cause?
+- What was the impact?
+- What recovery action was performed?
+- Was recovery successful?
+- What should be investigated next?
+
+The AI analyzer is an **analysis and recommendation component**. It does not independently control infrastructure recovery.
 
 ---
 
-# 1. Purpose
+# 1. Overview
 
-CloudForge uses an AI incident analyzer to examine incident records created by the self-healing system.
-
-The analyzer helps answer:
-
-1. What happened?
-2. What is the likely cause?
-3. What was the impact?
-4. What recovery action was performed?
-5. Was the recovery successful?
-6. What should be investigated next?
-
-The AI analyzer is an **analysis layer**.
-
-It does not replace the deterministic self-healing mechanism.
-
-The architecture is:
+The CloudForge incident workflow is:
 
 ```text
 Application Failure
-       ↓
+        |
+        v
 Health Check
-       ↓
+        |
+        v
 Self-Healing
-       ↓
+        |
+        v
+Evidence Collection
+        |
+        v
 Incident JSON
-       ↓
+        |
+        v
 AI Incident Analyzer
-       ↓
+        |
+        v
+Gemini
+        |
+        v
 AI Analysis Report
-       ↓
+        |
+        v
 Dashboard
 ````
 
----
-
-# 2. AI and Recovery Responsibilities
-
-CloudForge separates automated recovery from AI analysis.
-
-### Self-healing system
-
-Responsible for:
+The important separation is:
 
 ```text
-Failure detection
-Evidence collection
-Container restart
-Recovery verification
-Incident creation
+Self-Healing
+    -> performs recovery
+
+AI Analyzer
+    -> analyzes the incident
 ```
 
-### AI analyzer
-
-Responsible for:
-
-```text
-Incident interpretation
-Likely cause analysis
-Impact explanation
-Recovery assessment
-Recommended investigation steps
-```
-
-This separation prevents an AI response from directly controlling production recovery actions.
+The AI analyzer does not replace the deterministic recovery logic.
 
 ---
 
-# 3. AI Model
+# 2. Why CloudForge Uses an AI Analyzer
 
-CloudForge uses Google's Gemini API for incident analysis.
-
-The configured model during development is:
+Traditional monitoring can tell an engineer:
 
 ```text
-gemini-3.6-flash
+Container stopped
+Exit code: 137
+Recovery successful
 ```
 
-The model is accessed through Google's Python SDK:
+However, an engineer still needs to interpret the available evidence.
+
+The AI analyzer provides a structured explanation based on the incident record.
+
+For example, an incident can contain:
+
+```text
+Failure type
+Exit code
+OOMKilled status
+Restart count
+Container logs
+Host kernel logs
+Recovery action
+Recovery duration
+Recovery status
+```
+
+The analyzer turns this evidence into a readable incident report.
+
+---
+
+# 3. Current AI Architecture
+
+The current architecture is:
+
+```text
++---------------------+
+| CloudForge Monitor  |
++----------+----------+
+           |
+           v
++---------------------+
+| Self-Healing Script |
++----------+----------+
+           |
+           v
++---------------------+
+| Incident JSON       |
++----------+----------+
+           |
+           v
++---------------------+
+| AI Analyzer         |
+| ai_analyzer.py      |
++----------+----------+
+           |
+           v
++---------------------+
+| Google Gemini       |
++----------+----------+
+           |
+           v
++---------------------+
+| AI Analysis TXT     |
++----------+----------+
+           |
+           v
++---------------------+
+| CloudForge Dashboard|
++---------------------+
+```
+
+---
+
+# 4. AI Provider
+
+CloudForge uses the Google Gemini API for incident analysis.
+
+The Python SDK used by the analyzer is:
 
 ```text
 google-genai
 ```
 
+The analyzer dependency is intentionally separate from the application dependencies.
+
+This keeps the main CloudForge API container lightweight and avoids coupling the API runtime to the AI SDK.
+
 ---
 
-# 4. Analyzer Directory
+# 5. AI Model
 
-The analyzer is stored separately from the main FastAPI application:
+The working Gemini model used during development is:
 
 ```text
-analyzer/
-├── ai_analyzer.py
-├── requirements.txt
-└── run_analyzer.sh
+gemini-3.6-flash
 ```
 
-### `ai_analyzer.py`
+The model is used for text-based incident analysis.
 
-Contains the AI analysis logic.
-
-### `requirements.txt`
-
-Contains analyzer-specific Python dependencies.
-
-### `run_analyzer.sh`
-
-Provides a simple command to locate the latest incident and run the analyzer.
+The model name should be treated as a configuration value because model availability and naming can change over time.
 
 ---
 
-# 5. Why the Analyzer Has Separate Dependencies
+# 6. Dependency Separation
 
-The CloudForge API does not require the Gemini SDK.
+CloudForge separates application dependencies from analyzer dependencies.
 
-The application requirements are:
+Application dependencies:
+
+```text
+app/requirements.txt
+```
+
+Current application dependencies include:
 
 ```text
 fastapi
@@ -130,85 +187,96 @@ pytest
 httpx
 ```
 
-The analyzer has its own dependency file:
+Analyzer dependencies:
 
 ```text
 analyzer/requirements.txt
 ```
 
-which contains:
+Current analyzer dependency:
 
 ```text
 google-genai
 ```
 
-This keeps the application container smaller and separates the AI analysis environment from the API runtime.
+This separation prevents the Gemini SDK from being installed unnecessarily inside the API container.
 
 ---
 
-# 6. Python Virtual Environment
+# 7. Analyzer Directory
 
-The analyzer uses a separate Python virtual environment:
+The current analyzer directory is:
+
+```text
+analyzer/
+├── ai_analyzer.py
+├── requirements.txt
+└── run_analyzer.sh
+```
+
+The main components are:
+
+```text
+ai_analyzer.py
+    |
+    +--> Reads incident JSON
+    |
+    +--> Sends evidence to Gemini
+    |
+    +--> Receives analysis
+    |
+    +--> Writes AI report
+
+run_analyzer.sh
+    |
+    +--> Finds latest incident
+    |
+    +--> Runs ai_analyzer.py
+```
+
+---
+
+# 8. Python Virtual Environment
+
+The analyzer uses a dedicated Python virtual environment.
+
+Location:
 
 ```text
 /opt/cloudforge/.venv
 ```
 
-This prevents analyzer dependencies from being installed into the system Python environment.
-
-Create the environment if necessary:
+Create it with:
 
 ```bash
 cd /opt/cloudforge
 python3 -m venv .venv
 ```
 
----
-
-# 7. Activate the Virtual Environment
-
-CloudForge EC2 sessions may use `/bin/sh`.
-
-Therefore use:
+Activate it in the SSM shell:
 
 ```bash
 . /opt/cloudforge/.venv/bin/activate
 ```
 
-Do not rely on:
+The `.` form is intentional because an SSM session may start with `/bin/sh`, where:
 
 ```bash
-source /opt/cloudforge/.venv/bin/activate
+source
 ```
 
-because `source` is not available in every shell.
-
-Verify:
-
-```bash
-which python
-```
-
-The result should point to:
-
-```text
-/opt/cloudforge/.venv/bin/python
-```
+may not be available.
 
 ---
 
-# 8. Install Analyzer Dependencies
+# 9. Install Analyzer Dependencies
 
-Activate the environment:
+Install the analyzer dependencies using:
 
 ```bash
+cd /opt/cloudforge
 . /opt/cloudforge/.venv/bin/activate
-```
-
-Then:
-
-```bash
-python -m pip install -r /opt/cloudforge/analyzer/requirements.txt
+python -m pip install -r analyzer/requirements.txt
 ```
 
 Verify the Gemini SDK:
@@ -225,865 +293,1500 @@ Analyzer dependencies OK
 
 ---
 
-# 9. API Key Configuration
+# 10. API Key Security
 
-The Gemini API key must be provided through an environment variable.
+The Gemini API key is stored as an environment variable.
 
-The key should never be placed directly inside:
+It must not be:
 
 ```text
-ai_analyzer.py
+Committed to GitHub
+Written into source code
+Written into Jenkinsfile
+Included in incident JSON
+Included in dashboard responses
+Printed in logs
 ```
 
-or committed to GitHub.
+The environment configuration is stored outside the Git repository.
 
-The environment configuration used by CloudForge is stored outside the Git repository.
-
-For example:
+The project uses:
 
 ```text
 /etc/cloudforge/cloudforge.env
 ```
 
-The actual API key must remain private.
+for persistent environment configuration on the staging host.
 
 ---
 
-# 10. Environment Variable
+# 11. Environment Configuration
 
-The analyzer reads the Gemini API credential from the environment.
+The environment configuration is loaded by the runtime environment.
 
-A typical configuration uses:
+The important principle is:
 
 ```text
-GEMINI_API_KEY=<your-private-key>
+Secret
+   |
+   v
+Environment Variable
+   |
+   v
+AI Analyzer
 ```
 
-Do not put the real value in:
+The secret should never become part of:
 
 ```text
-README.md
-docs/
-GitHub
-Jenkinsfile
-source code
-screenshots
-incident files
+Git history
+Docker image
+Incident record
+AI report
+Dashboard JSON
 ```
 
 ---
 
-# 11. Verify the Environment
+# 12. Never Expose the API Key
 
-After configuring the environment variable, verify only that the variable exists.
+Do not run commands that print the complete key.
 
-For example:
-
-```bash
-if [ -n "$GEMINI_API_KEY" ]; then
-    echo "Gemini API key is configured"
-else
-    echo "Gemini API key is NOT configured"
-fi
-```
-
-Do not print the actual key.
-
-Never run:
+For example, avoid:
 
 ```bash
 echo "$GEMINI_API_KEY"
 ```
 
----
-
-# 12. Incident Input
-
-The AI analyzer reads incident JSON generated by the self-healing system.
-
-Incident files are stored under:
+Do not paste the key into:
 
 ```text
-/opt/cloudforge/incidents/
+ChatGPT
+GitHub
+Jenkinsfile
+README.md
+Documentation
+Screenshots
+Incident files
 ```
+
+Only verify that the environment variable exists without displaying its value.
+
+---
+
+# 13. AI Analyzer Input
+
+The analyzer receives an incident JSON file.
 
 Example:
 
 ```text
-incident-2026-09-28-061731.json
+/opt/cloudforge/incidents/incident-2026-09-28-061731.json
 ```
 
-The incident contains evidence such as:
+The incident contains structured evidence.
+
+The analyzer does not need direct access to Docker to perform the analysis.
+
+Instead:
 
 ```text
-Incident ID
-Environment
-Application
-Version
-Failure type
-Detection time
-Recovery action
-Recovery time
-Recovery duration
-Recovery status
-Health status
-Docker evidence
-Host evidence
+Docker
+   |
+   v
+Self-Healing
+   |
+   v
+Incident JSON
+   |
+   v
+AI Analyzer
+```
+
+This creates a clear evidence boundary.
+
+---
+
+# 14. Incident Evidence
+
+The incident record can contain:
+
+```text
+incident_id
+environment
+application
+version
+failure_type
+detected_at
+recovery_action
+recovered_at
+recovery_duration_seconds
+recovery_status
+health_status
+docker_evidence
+host_evidence
+```
+
+Docker evidence can include:
+
+```text
+Container status
+Exit code
+OOMKilled
+Restart count
+Container logs
+```
+
+Host evidence can include:
+
+```text
+Kernel logs
 ```
 
 ---
 
-# 13. Example Incident
+# 15. Why the Incident JSON Is Important
 
-A simplified incident may look like:
+The incident JSON acts as the evidence package for the AI analyzer.
 
-```json
-{
-  "incident_id": "incident-2026-09-28-061731",
-  "environment": "staging",
-  "application": "cloudforge-api",
-  "version": "1.0.0",
-  "failure_type": "container_stopped",
-  "detected_at": "2026-09-28T06:17:31Z",
-  "recovery_action": "docker_start",
-  "recovered_at": "2026-09-28T06:17:33Z",
-  "recovery_duration_seconds": 2,
-  "recovery_status": "successful",
-  "health_status": "healthy"
-}
+Without a structured incident record, the AI would have incomplete context.
+
+The flow is therefore:
+
+```text
+Raw Runtime State
+       |
+       v
+Evidence Collection
+       |
+       v
+Structured Incident
+       |
+       v
+AI Analysis
 ```
 
-The actual CloudForge incident also contains Docker and host evidence.
+This makes the analysis more reproducible.
 
 ---
 
-# 14. Running the Analyzer
+# 16. AI Analyzer Usage
 
-The recommended command is:
-
-```bash
-/opt/cloudforge/analyzer/run_analyzer.sh
-```
-
-The wrapper:
-
-1. Locates the incident directory.
-2. Finds the latest incident JSON.
-3. Runs the Python analyzer.
-4. Sends the incident data to Gemini.
-5. Generates the AI report.
-
----
-
-# 15. Direct Analyzer Usage
-
-The Python analyzer expects an incident JSON file as its argument.
-
-Usage:
+The analyzer is executed using:
 
 ```bash
 python ai_analyzer.py <incident.json>
 ```
 
-Example:
+For example:
 
 ```bash
 cd /opt/cloudforge
-./.venv/bin/python analyzer/ai_analyzer.py \
+. /opt/cloudforge/.venv/bin/activate
+
+python analyzer/ai_analyzer.py \
   incidents/incident-2026-09-28-061731.json
 ```
 
-The wrapper script is preferred because it automatically finds the latest incident.
+The analyzer reads the specified incident.
 
 ---
 
-# 16. Analyzer Flow
+# 17. Analyzer Wrapper
 
-The complete AI analysis process is:
+CloudForge also provides:
 
 ```text
-Incident JSON
-     ↓
-Read incident data
-     ↓
-Build analysis prompt
-     ↓
-Send evidence to Gemini
-     ↓
-Receive analysis
-     ↓
-Write AI report
+analyzer/run_analyzer.sh
 ```
 
-The analyzer is designed to use the incident data as the basis of its analysis.
+The wrapper automatically finds the latest incident.
+
+Its basic workflow is:
+
+```text
+Incident Directory
+       |
+       v
+Find Latest JSON
+       |
+       v
+ai_analyzer.py
+       |
+       v
+AI Report
+```
 
 ---
 
-# 17. Analysis Questions
+# 18. run_analyzer.sh
 
-The AI analyzer asks Gemini to analyze the incident using the following structure:
+The current wrapper is:
+
+```bash
+#!/bin/bash
+
+set -e
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+INCIDENT_DIR="$PROJECT_ROOT/incidents"
+ANALYZER="$PROJECT_ROOT/analyzer/ai_analyzer.py"
+PYTHON="$PROJECT_ROOT/.venv/bin/python"
+
+LATEST_INCIDENT=$(ls -t "$INCIDENT_DIR"/*.json 2>/dev/null | head -n 1)
+
+if [ -z "$LATEST_INCIDENT" ]; then
+    echo "No incident files found."
+    exit 1
+fi
+
+echo "Latest incident:"
+echo "$LATEST_INCIDENT"
+echo
+
+"$PYTHON" "$ANALYZER" "$LATEST_INCIDENT"
+```
+
+The important design decision is that the wrapper uses:
 
 ```text
-1. What happened?
+/opt/cloudforge/.venv/bin/python
+```
 
+directly.
+
+This avoids depending on the current shell's Python environment.
+
+---
+
+# 19. Why the Wrapper Uses the Virtual Environment Directly
+
+A monitoring or systemd process may not have the same shell environment as an interactive SSM session.
+
+Instead of relying on:
+
+```bash
+python
+```
+
+the wrapper uses:
+
+```text
+/opt/cloudforge/.venv/bin/python
+```
+
+This makes the analyzer more reliable when called automatically.
+
+---
+
+# 20. AI Analysis Prompt
+
+The analyzer sends the incident evidence to Gemini with instructions to analyze the available evidence.
+
+The requested sections are:
+
+```text
+1. What happened
 2. Likely cause
-
 3. Impact
-
 4. Recovery performed
-
 5. Recovery assessment
-
 6. Recommended next actions
 ```
 
-This structure keeps the generated report focused on operational troubleshooting.
+The analyzer also instructs the model to:
+
+```text
+Use only the provided incident data.
+Distinguish confirmed evidence from assumptions.
+Clearly state when the exact root cause cannot be determined.
+```
 
 ---
 
-# 18. Root Cause Uncertainty
+# 21. Evidence-First Analysis
 
-The analyzer is explicitly instructed not to invent a root cause.
+CloudForge follows an evidence-first approach.
 
-For example, an incident may show:
+The analyzer should reason from:
+
+```text
+Incident JSON
+```
+
+rather than inventing information about the environment.
+
+For example:
+
+```text
+Observed:
+exit_code = 137
+
+Observed:
+oom_killed = false
+
+Observed:
+container recovered after docker_start
+```
+
+These facts can be stated directly.
+
+The exact reason for the termination may remain uncertain.
+
+---
+
+# 22. Root Cause vs Evidence
+
+An important principle of CloudForge is:
+
+```text
+Evidence
+   !=
+Guaranteed Root Cause
+```
+
+For example:
+
+```text
+Exit code 137
+```
+
+indicates a process was terminated with signal `SIGKILL`.
+
+However, that alone does not necessarily establish exactly what initiated the termination.
+
+The analyzer therefore needs to distinguish:
+
+```text
+Confirmed
+Possible
+Unknown
+```
+
+---
+
+# 23. Example: Exit Code 137
+
+One verified CloudForge incident contained:
 
 ```text
 Exit code: 137
 OOMKilled: false
 ```
 
-The available evidence may indicate that the process was forcefully terminated, but it may not identify exactly what issued the termination.
+The incident also contained Docker and host evidence.
 
-In such cases the AI report should state that the exact root cause cannot be conclusively determined from the available evidence.
-
-This is important because:
+The AI analysis concluded that:
 
 ```text
-Possible cause ≠ Proven cause
+The process was terminated with SIGKILL.
+The Docker evidence did not confirm an OOM kill.
+The exact root cause could not be conclusively determined from the available evidence.
 ```
+
+The analysis recommended investigating:
+
+```text
+Docker events
+Deployment activity
+Host activity
+Maintenance activity
+External stop/kill operations
+```
+
+This is an example of why the AI analyzer should not automatically convert one signal into a definitive root cause.
 
 ---
 
-# 19. Example Exit Code Analysis
+# 24. Example: Graceful Container Stop
 
-Suppose an incident contains:
+Another controlled test used:
+
+```bash
+docker stop cloudforge-api
+```
+
+The resulting incident showed:
 
 ```text
-Status: exited
-ExitCode: 137
+Exit code: 0
 OOMKilled: false
 ```
 
-The analyzer can explain that exit code `137` is consistent with `SIGKILL`.
+The container logs showed a graceful shutdown.
 
-However, because:
+CloudForge then restarted the container.
 
-```text
-OOMKilled = false
-```
+The application became healthy again.
 
-the evidence does not establish that the Linux OOM killer caused the termination.
+The AI analysis identified the shutdown as orderly while noting that the evidence did not establish what initiated the shutdown.
 
-The report should therefore identify possible explanations without presenting an unsupported explanation as fact.
+This was an intentional chaos test rather than an unexplained production failure.
 
 ---
 
-# 20. AI Report Location
+# 25. Current Latest Intentional Test
 
-After analysis, the report is written next to the incident JSON.
-
-Example:
+A documented intentional test produced:
 
 ```text
-/opt/cloudforge/incidents/
-├── incident-2026-09-28-061731.json
-└── incident-2026-09-28-061731-ai.txt
+incident-2026-09-28-061731.json
 ```
 
-The `*-ai.txt` file contains the generated analysis.
+Important evidence included:
+
+```text
+failure_type: container_stopped
+exit_code: 0
+oom_killed: false
+recovery_status: successful
+health_status: healthy
+recovery_duration_seconds: 2
+```
+
+The container was intentionally stopped during the test.
+
+The self-healing system restarted it successfully.
 
 ---
 
-# 21. Example AI Report Structure
+# 26. AI Report Output
 
-A generated report follows the requested analysis structure:
+The analyzer generates a text report next to the incident file.
+
+For example:
 
 ```text
-What happened:
-...
-
-Likely cause:
-...
-
-Impact:
-...
-
-Recovery performed:
-...
-
-Recovery assessment:
-...
-
-Recommended next actions:
-...
+incident-2026-09-28-061731-ai.txt
 ```
 
-The exact wording depends on the incident evidence and Gemini response.
+The relationship is:
+
+```text
+incident-2026-09-28-061731.json
+              |
+              v
+        AI Analyzer
+              |
+              v
+incident-2026-09-28-061731-ai.txt
+```
 
 ---
 
-# 22. Automatic Analyzer Execution
+# 27. AI Report Purpose
 
-The self-healing workflow can invoke the analyzer after successful recovery.
+The report provides an engineer-friendly explanation of the incident.
 
-The overall sequence is:
+It is useful for:
+
+```text
+Incident review
+Learning
+Debugging
+Documentation
+Operational investigation
+Portfolio demonstration
+```
+
+It should not be treated as a replacement for raw evidence.
+
+The original incident JSON remains the authoritative evidence record.
+
+---
+
+# 28. Raw Evidence vs AI Analysis
+
+CloudForge keeps both:
+
+```text
+Raw Evidence
+     |
+     +--> incident JSON
+     |
+     +--> Docker logs
+     |
+     +--> Host logs
+
+AI Interpretation
+     |
+     +--> AI text report
+```
+
+This distinction is important.
+
+The AI report explains the evidence.
+
+It does not replace the evidence.
+
+---
+
+# 29. AI Analyzer Failure
+
+If the Gemini API is unavailable, the self-healing recovery should not depend on the AI analyzer.
+
+The recovery sequence is:
 
 ```text
 Failure
-   ↓
-Health check fails
-   ↓
-Collect evidence
-   ↓
-Restart container
-   ↓
-Health check succeeds
-   ↓
-Create incident JSON
-   ↓
-Run AI analyzer
-   ↓
-Create AI report
-```
-
-This creates a complete incident lifecycle.
-
----
-
-# 23. Why AI Runs After Recovery
-
-The deterministic recovery process should remain fast and predictable.
-
-Therefore the basic recovery sequence does not need to wait for an AI response before restoring the service.
-
-Instead:
-
-```text
-Failure
-  ↓
-Recover first
-  ↓
-Verify service
-  ↓
-Analyze incident
-```
-
-This keeps AI analysis separate from the immediate recovery path.
-
----
-
-# 24. Dashboard Integration
-
-The dashboard reads the latest AI analysis from:
-
-```text
-/opt/cloudforge/incidents/
-```
-
-The backend exposes it through the dashboard API.
-
-The dashboard can then display:
-
-```text
-Latest Incident
-      +
-Recovery Information
-      +
+   |
+   v
+Self-Healing
+   |
+   v
+Container Recovery
+   |
+   v
+Health Verification
+   |
+   v
+Incident Record
+   |
+   v
 AI Analysis
 ```
 
-This gives the operator a single place to understand what happened.
+The incident record is created as part of the recovery workflow.
+
+AI analysis is an additional diagnostic capability.
 
 ---
 
-# 25. AI Analyzer and Self-Healing Separation
+# 30. Why AI Is Not Used for Recovery
 
-The architecture intentionally separates:
+CloudForge deliberately keeps recovery deterministic.
+
+The recovery action is defined by the self-healing logic.
+
+For the current supported failure:
 
 ```text
-                    CloudForge
-                         |
-          +--------------+--------------+
-          |                             |
-          v                             v
-    Self-Healing                  AI Analyzer
-          |                             |
-          |                             |
-    Detect failure                Analyze evidence
-          |                             |
-    Collect evidence              Explain incident
-          |                             |
-    Restart container             Recommend actions
-          |                             |
-    Verify recovery                     |
-          |                             |
-          +--------------+--------------+
-                         |
-                    Dashboard
+Container failure
+        |
+        v
+Restart container
 ```
 
-The AI analyzer does not directly execute Docker commands.
+The AI system is not allowed to arbitrarily execute infrastructure commands.
+
+This reduces the risk of unpredictable automated changes.
 
 ---
 
-# 26. Security
+# 31. AI Analyzer and Security
 
-The Gemini API key is sensitive.
+The analyzer receives operational information.
 
-Follow these rules:
+Therefore incident data should be reviewed before expanding the system to include sensitive information.
 
-### Never commit the key
-
-Do not put it in:
+Do not intentionally send:
 
 ```text
-GitHub
-README
-documentation
-source code
-Dockerfile
-Jenkinsfile
-incident files
-```
-
-### Never print the key
-
-Avoid:
-
-```bash
-echo "$GEMINI_API_KEY"
-```
-
-### Use environment configuration
-
-Keep the credential outside the source repository.
-
-### Rotate compromised keys
-
-If a key is accidentally exposed, revoke or rotate it immediately.
-
----
-
-# 27. Git Safety
-
-Before committing CloudForge changes:
-
-```bash
-git status
-```
-
-Check that no secret configuration files are being tracked.
-
-Useful checks include:
-
-```bash
-git status --short
-```
-
-and:
-
-```bash
-git diff
-```
-
-Never commit:
-
-```text
-.env
-cloudforge.env
+Passwords
 API keys
-AWS credentials
-private keys
+Private credentials
+Access tokens
+Sensitive customer information
+```
+
+to the AI service.
+
+The current incident data is designed around infrastructure and container evidence.
+
+---
+
+# 32. AI Analyzer and Privacy
+
+The incident analyzer should follow the principle:
+
+```text
+Minimum required evidence
+```
+
+Only information needed to understand the incident should be included.
+
+This reduces unnecessary exposure of operational data.
+
+---
+
+# 33. AI Analyzer and Dashboard
+
+The dashboard displays the latest AI analysis.
+
+The dashboard API includes:
+
+```text
+/api/dashboard
+```
+
+The response can contain:
+
+```text
+latest_incident
+latest_ai_analysis
+```
+
+The architecture is:
+
+```text
+Incident JSON
+      |
+      +--------------------+
+      |                    |
+      v                    v
+AI Analyzer           Dashboard
+      |                    |
+      v                    |
+AI Report -----------------+
 ```
 
 ---
 
-# 28. Troubleshooting
+# 34. Dashboard AI Section
 
-## Analyzer reports that the API key is missing
+The dashboard can display information such as:
 
-Check only whether it exists:
+```text
+Latest incident
+Failure type
+Recovery duration
+Recovery status
+AI analysis
+Recommended next actions
+```
+
+This allows an engineer to understand the latest incident without opening the server shell.
+
+---
+
+# 35. AI Analyzer Testing
+
+The analyzer can be tested independently from the monitoring loop.
+
+First identify an incident:
 
 ```bash
-if [ -n "$GEMINI_API_KEY" ]; then
-    echo "Configured"
-else
-    echo "Missing"
-fi
+ls -lt /opt/cloudforge/incidents/*.json
 ```
 
-Do not print the value.
+Then run:
+
+```bash
+cd /opt/cloudforge
+. /opt/cloudforge/.venv/bin/activate
+
+python analyzer/ai_analyzer.py \
+  /opt/cloudforge/incidents/<incident-file>.json
+```
+
+Verify that an AI report is generated:
+
+```bash
+ls -lt /opt/cloudforge/incidents/*-ai.txt
+```
 
 ---
 
-## Gemini SDK is missing
+# 36. Verify Analyzer Dependencies
 
 Run:
 
 ```bash
+cd /opt/cloudforge
 . /opt/cloudforge/.venv/bin/activate
-python -m pip install -r /opt/cloudforge/analyzer/requirements.txt
-```
 
-Then:
-
-```bash
 python -c "from google import genai; print('Analyzer dependencies OK')"
 ```
 
----
+Expected:
 
-## No incident files found
-
-Check:
-
-```bash
-ls -la /opt/cloudforge/incidents
+```text
+Analyzer dependencies OK
 ```
-
-The wrapper requires an incident JSON file.
-
-If there are no incidents, the analyzer has nothing to analyze.
 
 ---
 
-## Analyzer cannot read the incident
+# 37. Verify the Analyzer Script
 
-Check:
-
-```bash
-ls -l /opt/cloudforge/incidents/
-```
-
-Then verify the incident file:
-
-```bash
-cat /opt/cloudforge/incidents/<incident-file>.json
-```
-
-Make sure the JSON is valid.
-
----
-
-## AI report is not generated
-
-Run the analyzer manually:
+Run:
 
 ```bash
 cd /opt/cloudforge
-./.venv/bin/python analyzer/ai_analyzer.py \
-  incidents/<incident-file>.json
+
+./analyzer/run_analyzer.sh
 ```
 
-Inspect the error returned by the analyzer.
+Expected behavior:
+
+```text
+Latest incident:
+<incident-file>
+
+AI analysis generated
+```
+
+The exact output depends on the analyzer implementation and API response.
 
 ---
 
-# 29. Manual Test
+# 38. Common Analyzer Problems
 
-To test the analyzer using the latest incident:
+## Problem: Python module not found
+
+Example:
+
+```text
+ModuleNotFoundError: No module named 'google'
+```
+
+Solution:
 
 ```bash
 cd /opt/cloudforge
-. .venv/bin/activate
-/opt/cloudforge/analyzer/run_analyzer.sh
+. /opt/cloudforge/.venv/bin/activate
+python -m pip install -r analyzer/requirements.txt
 ```
 
-Then:
+---
+
+# 39. Problem: Virtual Environment Not Active
+
+If:
+
+```bash
+source /opt/cloudforge/.venv/bin/activate
+```
+
+fails in an SSM shell, use:
+
+```bash
+. /opt/cloudforge/.venv/bin/activate
+```
+
+This works with the shell environment commonly used by the SSM session.
+
+---
+
+# 40. Problem: No Incident Files
+
+If the wrapper reports:
+
+```text
+No incident files found.
+```
+
+check:
 
 ```bash
 ls -lt /opt/cloudforge/incidents/
 ```
 
-Look for:
-
-```text
-*-ai.txt
-```
+The analyzer requires an incident JSON file as input.
 
 ---
 
-# 30. Verify the Generated Report
+# 41. Problem: AI API Configuration
 
-Read the latest AI report:
+If the analyzer cannot authenticate with Gemini, verify that the required environment variable is available to the process.
+
+Do not print the secret.
+
+Instead, verify only that the variable exists:
 
 ```bash
-LATEST_AI=$(ls -t /opt/cloudforge/incidents/*-ai.txt | head -n 1)
-cat "$LATEST_AI"
+if [ -n "$GEMINI_API_KEY" ]; then
+    echo "Gemini API key is configured"
+else
+    echo "Gemini API key is not configured"
+fi
 ```
 
-Verify that the report contains the expected sections:
+This does not reveal the key.
+
+---
+
+# 42. Problem: AI API Failure
+
+If Gemini is temporarily unavailable:
 
 ```text
-What happened
-Likely cause
-Impact
-Recovery performed
+Self-Healing
+     |
+     v
+Container Recovery
+     |
+     v
+Successful
+     |
+     v
+Incident Saved
+     |
+     v
+AI Analysis
+     |
+     v
+API Failure
+```
+
+The incident record should remain available for later analysis.
+
+The AI component should not be treated as the mechanism responsible for application recovery.
+
+---
+
+# 43. Analyzer Dependency Verification
+
+The project previously verified:
+
+```text
+google-genai
+```
+
+was installed successfully.
+
+The verification command:
+
+```bash
+./.venv/bin/python -c \
+"from google import genai; print('Analyzer dependencies OK')"
+```
+
+returned:
+
+```text
+Analyzer dependencies OK
+```
+
+---
+
+# 44. Project Dependency Structure
+
+The final dependency structure is:
+
+```text
+CloudForge
+|
++-- app/
+|    |
+|    +-- FastAPI
+|    +-- Uvicorn
+|    +-- psutil
+|    +-- pytest
+|    +-- httpx
+|
++-- analyzer/
+     |
+     +-- google-genai
+```
+
+This keeps AI-specific dependencies separate from the application container.
+
+---
+
+# 45. AI Analyzer Execution Model
+
+The analyzer can be triggered after self-healing:
+
+```text
+Monitor
+   |
+   v
+Self-Healing
+   |
+   v
+Incident JSON
+   |
+   v
+run_analyzer.sh
+   |
+   v
+ai_analyzer.py
+   |
+   v
+Gemini
+   |
+   v
+AI Report
+```
+
+It can also be executed manually for testing.
+
+---
+
+# 46. Current AI Role
+
+The current AI analyzer is responsible for:
+
+```text
+Incident interpretation
+Evidence summarization
+Likely-cause discussion
+Impact explanation
 Recovery assessment
-Recommended next actions
+Recommended investigation steps
+```
+
+It is not responsible for:
+
+```text
+Container restart
+EC2 replacement
+Security-group modification
+Terraform changes
+Automatic rollback
+Infrastructure provisioning
 ```
 
 ---
 
-# 31. Current CloudForge AI Test Example
+# 47. Current AI Safety Boundary
 
-A previous CloudForge incident contained:
+CloudForge uses the following boundary:
 
 ```text
-Failure type:
-container_stopped
+                 +----------------------+
+                 |   Deterministic      |
+                 |   Recovery Logic     |
+                 +----------+-----------+
+                            |
+                            v
+                     Runtime Recovery
 
-Docker status:
-exited
-
-Exit code:
-137
-
-OOMKilled:
-false
-
-Recovery:
-successful
-
-Recovery duration:
-approximately 3 seconds
+                 +----------------------+
+                 |      AI Analyzer     |
+                 +----------+-----------+
+                            |
+                            v
+                    Human-readable
+                     interpretation
 ```
 
-The generated analysis identified that:
+The AI can explain and recommend.
 
-* The container was forcefully terminated.
-* Exit code `137` is consistent with `SIGKILL`.
-* `OOMKilled=false` means the available evidence did not establish an OOM-killer event.
-* The exact source of the termination could not be conclusively determined from the incident evidence.
-* The container was automatically restarted.
-* The application recovered successfully.
-* Further investigation should focus on events around the time of termination.
-
-This demonstrates how the analyzer uses evidence instead of simply assigning a fixed cause.
+The deterministic system performs the current recovery.
 
 ---
 
-# 32. Intentional Chaos Test Example
+# 48. Human Review
 
-Another controlled CloudForge test produced:
-
-```text
-Failure type:
-container_stopped
-
-Exit code:
-0
-
-OOMKilled:
-false
-
-Recovery:
-successful
-
-Recovery duration:
-approximately 2 seconds
-```
-
-The evidence showed an orderly container shutdown.
-
-Because this was an intentional chaos test, the report could identify the clean shutdown characteristics while still distinguishing the observed evidence from the exact underlying trigger.
-
----
-
-# 33. AI Analysis Limitations
-
-AI analysis is not guaranteed to determine the exact root cause.
-
-Possible limitations include:
-
-```text
-Incomplete logs
-Insufficient host evidence
-Missing AWS events
-Missing deployment history
-Ambiguous exit codes
-External events not captured by CloudForge
-```
-
-Therefore AI output should be treated as:
-
-```text
-Evidence-based operational analysis
-```
-
-rather than:
-
-```text
-Guaranteed root-cause determination
-```
-
----
-
-# 34. Future Improvements
-
-Future versions of CloudForge could expand the analyzer to include:
-
-```text
-CloudWatch logs
-Jenkins deployment history
-Git commit information
-ECR image metadata
-EC2 system events
-CloudTrail events
-Docker events
-Historical incidents
-Resource utilization
-Network diagnostics
-```
-
-This would provide the AI analyzer with a larger evidence set.
-
----
-
-# 35. Future Incident Correlation
-
-A future version could correlate:
-
-```text
-Incident
-   +
-Git commit
-   +
-Docker image
-   +
-Jenkins deployment
-   +
-EC2 events
-   +
-CloudWatch logs
-```
-
-Example:
-
-```text
-Deployment
-    ↓
-New Docker image
-    ↓
-Application failure
-    ↓
-Incident
-    ↓
-AI correlation
-```
-
-This could help identify deployment-related incidents more accurately.
-
----
-
-# 36. Future Policy Engine
-
-The AI analyzer currently provides analysis and recommendations.
-
-A future policy engine could convert validated incident classifications into deterministic actions.
+AI-generated analysis should be reviewed by an engineer before making consequential infrastructure changes.
 
 For example:
 
 ```text
-Container stopped
-       ↓
-Restart container
-
-Repeated container failure
-       ↓
-Stop automatic restart
-       ↓
-Escalate
-
-Bad deployment detected
-       ↓
-Rollback image
-
-Network failure
-       ↓
-Run network diagnostics
+AI recommendation
+       |
+       v
+Engineer reviews evidence
+       |
+       v
+Engineer determines action
 ```
 
-AI should not directly execute destructive recovery actions without appropriate policy, authorization, and validation.
+The AI report is therefore an operational assistant rather than an autonomous infrastructure controller.
 
 ---
 
-# 37. Final Architecture
+# 49. Recommended Incident Investigation Flow
 
-The complete CloudForge incident-analysis lifecycle is:
+When an incident occurs:
 
 ```text
-                         CloudForge
-                              |
-                       Application API
-                              |
-                         Health Check
-                              |
-                    +---------+---------+
-                    |                   |
-                 Healthy             Failed
-                    |                   |
-                  Wait           Evidence Collection
-                                        |
-                                Self-Healing Action
-                                        |
-                                Health Verification
-                                        |
-                              +---------+---------+
-                              |                   |
-                           Recovered           Failed
-                              |                   |
-                       Incident JSON       Incident remains
-                              |
-                              v
-                       Gemini Analyzer
-                              |
-                              v
-                         AI Report
-                              |
-                              v
-                          Dashboard
+1. Check incident JSON
+2. Check Docker evidence
+3. Check host evidence
+4. Check recovery result
+5. Read AI analysis
+6. Compare AI analysis with raw evidence
+7. Investigate uncertain areas
+8. Apply corrective action if required
+```
+
+This keeps the investigation evidence-driven.
+
+---
+
+# 50. Example Investigation
+
+Suppose the incident contains:
+
+```text
+failure_type: container_stopped
+exit_code: 137
+oom_killed: false
+recovery_status: successful
+recovery_duration_seconds: 3
+```
+
+The correct interpretation is:
+
+```text
+Confirmed:
+The container stopped.
+The process exited with code 137.
+Docker did not report OOMKilled.
+The container was restarted successfully.
+Recovery took approximately 3 seconds.
+```
+
+Potential explanation:
+
+```text
+The process may have received SIGKILL.
+```
+
+Unconfirmed:
+
+```text
+The exact actor or event that initiated the SIGKILL.
+```
+
+The next investigation should focus on additional host and Docker evidence.
+
+---
+
+# 51. Why This Design Is Useful
+
+The AI analyzer demonstrates a practical DevOps/SRE workflow:
+
+```text
+Monitoring
+    +
+Automation
+    +
+Evidence Collection
+    +
+AI Assistance
+    =
+Incident Response Workflow
+```
+
+The AI component is therefore integrated into the operational workflow rather than being an unrelated chatbot feature.
+
+---
+
+# 52. Reproducibility
+
+The analyzer source is stored in Git:
+
+```text
+analyzer/
+├── ai_analyzer.py
+├── requirements.txt
+└── run_analyzer.sh
+```
+
+A fresh CloudForge environment can recreate the analyzer dependencies using:
+
+```bash
+cd /opt/cloudforge
+python3 -m venv .venv
+. /opt/cloudforge/.venv/bin/activate
+python -m pip install -r analyzer/requirements.txt
+```
+
+The secret itself must be configured separately.
+
+Secrets are intentionally not stored in the repository.
+
+---
+
+# 53. Git Repository Contents
+
+The analyzer-related source-controlled files are:
+
+```text
+analyzer/ai_analyzer.py
+analyzer/requirements.txt
+analyzer/run_analyzer.sh
+```
+
+Incident output files are runtime artifacts and should not be committed.
+
+The repository `.gitignore` excludes local runtime artifacts such as:
+
+```text
+.venv/
+runtime/
+```
+
+and incident-related generated files.
+
+---
+
+# 54. Runtime vs Source Code
+
+CloudForge separates:
+
+```text
+Source Code
+    |
+    +--> GitHub
+
+Runtime Data
+    |
+    +--> incidents/
+    +--> runtime/
+    +--> AI reports
+```
+
+This prevents generated incident data from becoming part of the application source tree.
+
+---
+
+# 55. Current Verified AI Workflow
+
+The verified workflow is:
+
+```text
+Controlled Failure
+       |
+       v
+Health Check Failure
+       |
+       v
+Self-Healing
+       |
+       v
+Container Recovery
+       |
+       v
+Incident JSON
+       |
+       v
+Gemini Analyzer
+       |
+       v
+AI Analysis
+       |
+       v
+Dashboard
+```
+
+This workflow has been exercised using controlled container failures.
+
+---
+
+# 56. Current Limitations
+
+The current AI analyzer has several limitations.
+
+It does not guarantee:
+
+```text
+Exact root-cause identification
+Complete infrastructure visibility
+Complete historical correlation
+Automatic infrastructure remediation
+Perfect interpretation of ambiguous evidence
+```
+
+The quality of the analysis depends on the evidence provided to the model.
+
+---
+
+# 57. Future Enhancements
+
+Potential future improvements include:
+
+```text
+Incident classification
+Historical incident comparison
+Failure pattern detection
+Incident severity estimation
+Log correlation
+CloudWatch evidence correlation
+Docker event correlation
+AWS event correlation
+Deployment correlation
+Suggested remediation policies
+Human approval workflow
+```
+
+These are future enhancements and should not be represented as currently implemented capabilities.
+
+---
+
+# 58. Future Policy Engine
+
+A future architecture could connect AI recommendations to a controlled policy engine:
+
+```text
+Incident
+   |
+   v
+Evidence
+   |
+   v
+AI Analysis
+   |
+   v
+Recommendation
+   |
+   v
+Policy Engine
+   |
+   +---- Approved ----> Remediation
+   |
+   +---- Rejected ---> Human Review
+```
+
+This would provide a safer path toward more automated remediation.
+
+---
+
+# 59. Future Historical Analysis
+
+A future version could analyze multiple incidents:
+
+```text
+Incident 1
+Incident 2
+Incident 3
+Incident 4
+     |
+     v
+Historical Analysis
+     |
+     v
+Repeated Failure Pattern
+```
+
+This could help identify recurring infrastructure or deployment problems.
+
+This capability is not currently implemented.
+
+---
+
+# 60. AI Analyzer Verification Checklist
+
+Verify the following:
+
+```text
+[ ] analyzer/ai_analyzer.py exists
+[ ] analyzer/requirements.txt exists
+[ ] analyzer/run_analyzer.sh exists
+[ ] Python virtual environment exists
+[ ] google-genai is installed
+[ ] Gemini environment variable is configured
+[ ] Incident JSON exists
+[ ] Analyzer can read the incident
+[ ] Gemini analysis is returned
+[ ] AI report is generated
+[ ] API key is not printed
+[ ] API key is not committed
+[ ] Dashboard can display AI analysis
 ```
 
 ---
 
-# 38. Summary
+# 61. Quick Verification Commands
 
-The CloudForge AI Incident Analyzer provides an AI-assisted investigation layer on top of deterministic self-healing.
+Check analyzer files:
 
-It provides:
-
-```text
-Incident evidence
-      +
-Gemini analysis
-      +
-Likely-cause reasoning
-      +
-Impact explanation
-      +
-Recovery assessment
-      +
-Recommended next actions
+```bash
+ls -la /opt/cloudforge/analyzer/
 ```
 
-The key design principle is:
+Check virtual environment:
 
-```text
-Self-healing restores the service.
-AI explains the incident.
+```bash
+ls -la /opt/cloudforge/.venv/bin/python
 ```
 
-This separation keeps the recovery mechanism predictable while using AI to improve incident understanding and troubleshooting.
+Check dependency:
 
+```bash
+/opt/cloudforge/.venv/bin/python \
+  -c "from google import genai; print('Analyzer dependencies OK')"
+```
 
+Check incidents:
+
+```bash
+ls -lt /opt/cloudforge/incidents/
+```
+
+Run analyzer:
+
+```bash
+cd /opt/cloudforge
+./analyzer/run_analyzer.sh
+```
+
+Check AI reports:
+
+```bash
+ls -lt /opt/cloudforge/incidents/*-ai.txt
+```
+
+---
+
+# 62. End-to-End Example
+
+A complete incident lifecycle looks like:
+
+```text
+                     APPLICATION
+                          |
+                          v
+                    Health Check
+                          |
+                     Failure
+                          |
+                          v
+                 +----------------+
+                 | Self-Healing   |
+                 +-------+--------+
+                         |
+              +----------+----------+
+              |                     |
+              v                     v
+       Docker Evidence       Host Evidence
+              |                     |
+              +----------+----------+
+                         |
+                         v
+                  Container Restart
+                         |
+                         v
+                  Health Verification
+                         |
+                    +----+----+
+                    |         |
+                  Success   Failure
+                    |         |
+                    v         v
+              Incident JSON  Recovery
+                    |        Failed
+                    v
+              AI Analyzer
+                    |
+                    v
+                 Gemini
+                    |
+                    v
+              AI Report
+                    |
+                    v
+                Dashboard
+```
+
+---
+
+# 63. Final Architecture
+
+The final implemented AI incident analysis architecture is:
+
+```text
++----------------------------------------------------------+
+|                    CloudForge EC2                        |
+|                                                          |
+|  +-------------------+                                   |
+|  | CloudForge API    |                                   |
+|  |      :8000        |                                   |
+|  +---------+---------+                                   |
+|            |                                              |
+|            v                                              |
+|  +-------------------+                                   |
+|  | Health Monitoring |                                   |
+|  +---------+---------+                                   |
+|            |                                              |
+|            v                                              |
+|  +-------------------+                                   |
+|  | Self-Healing      |                                   |
+|  +---------+---------+                                   |
+|            |                                              |
+|            v                                              |
+|  +-------------------+                                   |
+|  | Incident JSON     |                                   |
+|  +---------+---------+                                   |
+|            |                                              |
+|            v                                              |
+|  +-------------------+                                   |
+|  | AI Analyzer       |                                   |
+|  +---------+---------+                                   |
+|            |                                              |
++------------|----------------------------------------------+
+             |
+             v
+      +--------------+
+      | Google Gemini|
+      +------+-------+
+             |
+             v
+      +--------------+
+      | AI Report    |
+      +------+-------+
+             |
+             v
+      +--------------+
+      | Dashboard    |
+      +--------------+
+```
+
+---
+
+# 64. Final Summary
+
+CloudForge's AI Incident Analyzer adds an AI-assisted investigation layer to the self-healing system.
+
+The complete workflow is:
+
+```text
+Detect
+  ↓
+Collect Evidence
+  ↓
+Recover
+  ↓
+Verify
+  ↓
+Create Incident
+  ↓
+Analyze With AI
+  ↓
+Generate Report
+  ↓
+Display In Dashboard
+```
+
+The most important architectural separation is:
+
+```text
+Self-Healing
+    = deterministic runtime recovery
+
+AI Analyzer
+    = evidence-based incident analysis
+```
+
+The AI analyzer does not independently restart containers or modify AWS infrastructure.
+
+This keeps the recovery mechanism predictable while still using AI to make incident evidence easier to understand.
+
+CloudForge therefore demonstrates the combination of:
+
+```text
+AWS
+Docker
+Linux
+Python
+FastAPI
+Jenkins
+Amazon ECR
+AWS Systems Manager
+Runtime Monitoring
+Self-Healing
+Incident Evidence
+Google Gemini
+AI-Assisted Incident Analysis
+Operational Dashboard
+Chaos Testing
+```
+
+The current implementation focuses on container-level recovery and AI-assisted analysis, while broader autonomous remediation remains a future extension.
+
+```
+```

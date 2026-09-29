@@ -1,118 +1,127 @@
-# CloudForge Self-Healing Guide
+# CloudForge Self-Healing System
 
-This document explains how CloudForge detects application failures, collects evidence, automatically attempts recovery, and records the incident.
+CloudForge includes a runtime self-healing mechanism designed to detect application failures, collect evidence, restart the affected container, verify recovery, create an incident record, and trigger AI-based incident analysis.
+
+The current implementation focuses on failures that can be recovered by restarting the application container.
 
 ---
 
-# 1. Purpose
+# 1. Self-Healing Overview
 
-CloudForge includes a self-healing mechanism for the application container.
-
-The primary goal is to automatically recover from failures where restarting the application container can restore service.
-
-The recovery lifecycle is:
+The self-healing workflow is:
 
 ```text
-Application Failure
-       ↓
-Health Check Fails
-       ↓
-Failure Detected
-       ↓
-Evidence Collected
-       ↓
-Container Restart
-       ↓
+Application
+     |
+     v
 Health Check
-       ↓
-Recovered?
-    /       \
-  Yes        No
-   |          |
-Incident     Recovery
-Recorded     Failed
-   |
-AI Analysis
+     |
+     +---- Healthy ----> Continue Monitoring
+     |
+     +---- Failed
+            |
+            v
+      Failure Detection
+            |
+            v
+      Evidence Collection
+            |
+            v
+      Container Recovery
+            |
+            v
+      Health Verification
+            |
+       +----+----+
+       |         |
+    Healthy    Failed
+       |         |
+       v         v
+   Incident    Recovery
+    Record     Failed
+       |
+       v
+  AI Analysis
 ````
 
----
-
-# 2. Current Self-Healing Boundary
-
-CloudForge currently focuses on application/container-level failures.
-
-It can automatically recover failures such as:
-
-```text
-Container stopped
-Container forcefully terminated
-Application becomes unavailable because the container stopped
-```
-
-It does not automatically solve every infrastructure failure.
-
-For example, if a firewall blocks port `8000`, restarting the container does not remove the firewall rule.
-
-Therefore:
-
-```text
-Container Failure
-       ↓
-Restart Container
-       ↓
-Possible Recovery
-```
-
-but:
-
-```text
-Network / Firewall Failure
-       ↓
-Restart Container
-       ↓
-Network still blocked
-       ↓
-Recovery fails
-```
-
-This boundary is intentionally documented because it represents an area for future policy-engine and AI-driven improvements.
+The objective is to reduce the time between failure detection and recovery while preserving evidence about what happened.
 
 ---
 
-# 3. Main Components
+# 2. Current Self-Healing Scope
 
-CloudForge self-healing consists of several components.
+CloudForge currently handles application failures where restarting the Docker container can restore service.
+
+Examples tested successfully include:
 
 ```text
-/opt/cloudforge/scripts/
-├── health-check.sh
-├── monitor.sh
-└── self-heal.sh
+docker stop cloudforge-api
+docker kill cloudforge-api
 ```
 
-The main responsibilities are:
-
-| Component                    | Responsibility                                  |
-| ---------------------------- | ----------------------------------------------- |
-| `health-check.sh`            | Checks application health                       |
-| `monitor.sh`                 | Continuously monitors the application           |
-| `self-heal.sh`               | Performs recovery and creates incident evidence |
-| `status-publisher.sh`        | Publishes container runtime state               |
-| `cloudforge-monitor.service` | Runs monitoring continuously                    |
+CloudForge detects the failed health check and attempts to restart the container.
 
 ---
 
-# 4. Health Check
+# 3. Important Limitation
 
-The health-check script is:
+Self-healing does not currently recover every possible infrastructure failure.
+
+For example, a firewall rule blocking port `8000` can cause the application health check to fail even when the Docker container itself is running correctly.
+
+In that situation:
 
 ```text
-/opt/cloudforge/scripts/health-check.sh
+Health Check
+     |
+     v
+Failure
+     |
+     v
+Container Restart
+     |
+     v
+Health Check
+     |
+     v
+Still Failed
 ```
 
-Its purpose is to determine whether the CloudForge API is responding.
+The container restart does not remove the external firewall problem.
 
-The health endpoint is:
+This was intentionally tested as part of CloudForge chaos testing.
+
+The limitation is documented rather than presenting the system as capable of recovering every failure type.
+
+---
+
+# 4. Components
+
+The self-healing system consists of:
+
+```text
+health-check.sh
+monitor.sh
+self-heal.sh
+cloudforge-monitor.service
+cloudforge-status-publisher.service
+incident JSON records
+AI incident analyzer
+```
+
+---
+
+# 5. Health Check
+
+The health check script is:
+
+```text
+scripts/health-check.sh
+```
+
+Its purpose is to determine whether the CloudForge API is responding correctly.
+
+The endpoint checked is:
 
 ```text
 http://127.0.0.1:8000/health
@@ -124,162 +133,234 @@ The script uses:
 curl -fsS
 ```
 
-to verify the endpoint.
-
-A successful request produces:
-
-```text
-CloudForge health check: HEALTHY
-```
-
-and the API response.
+A successful response means the application is considered healthy.
 
 ---
 
-# 5. Run the Health Check Manually
+# 6. Health Check Script
 
-Connect to the staging EC2 instance through SSM.
-
-Then:
+The current implementation is:
 
 ```bash
-sudo su - ssm-user
+#!/bin/bash
+
+URL="http://127.0.0.1:8000/health"
+
+if curl -fsS "$URL" > /tmp/cloudforge-health.json; then
+    echo "CloudForge health check: HEALTHY"
+    cat /tmp/cloudforge-health.json
+    exit 0
+else
+    echo "CloudForge health check: FAILED"
+    exit 1
+fi
 ```
 
-Go to the project:
-
-```bash
-cd /opt/cloudforge
-```
-
-Run:
-
-```bash
-/opt/cloudforge/scripts/health-check.sh
-```
-
-Expected:
+The important design decision is that the script returns:
 
 ```text
-CloudForge health check: HEALTHY
-{"status":"healthy","version":"1.0.0"}
+0 = healthy
+1 = unhealthy
 ```
+
+This allows the monitoring process to make a simple decision.
 
 ---
 
-# 6. Monitoring Loop
+# 7. Monitoring Loop
 
 The monitoring script is:
 
 ```text
-/opt/cloudforge/scripts/monitor.sh
+scripts/monitor.sh
 ```
 
-The monitor continuously executes the health check.
+It continuously checks the application.
 
-The current monitoring interval is approximately:
+The current monitoring interval is:
 
 ```text
 30 seconds
 ```
 
-The simplified logic is:
+The workflow is:
 
 ```text
-Start monitor
-     ↓
-Run health check
-     ↓
-Healthy?
-   /     \
- Yes      No
-  |        |
-Wait      Start
-30 sec    self-healing
-  |        |
-  +--------+
+Run Health Check
+       |
+       +---- Success
+       |       |
+       |       v
+       |   Wait 30 seconds
+       |
+       +---- Failure
+               |
+               v
+          Start Self-Healing
+               |
+               v
+          Wait 30 seconds
 ```
 
 ---
 
-# 7. Monitoring Service
+# 8. Monitor Script
 
-CloudForge runs the monitoring process using systemd.
+The current implementation is:
 
-Service:
+```bash
+#!/bin/bash
+
+HEALTH_CHECK="/opt/cloudforge/scripts/health-check.sh"
+SELF_HEAL="/opt/cloudforge/scripts/self-heal.sh"
+
+echo "CloudForge monitor started..."
+echo "Checking application every 30 seconds..."
+
+while true; do
+
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Running health check..."
+
+    if "$HEALTH_CHECK"; then
+        echo "Application is healthy."
+
+    else
+        echo "Application is unhealthy."
+        echo "Starting self-healing..."
+
+        if "$SELF_HEAL"; then
+            echo "Self-healing completed successfully."
+        else
+            echo "Self-healing FAILED."
+        fi
+    fi
+
+    echo "Waiting 30 seconds..."
+    sleep 30
+
+done
+```
+
+---
+
+# 9. Systemd Monitoring Service
+
+The monitoring process runs as a systemd service:
 
 ```text
 cloudforge-monitor.service
 ```
 
-Check the service:
+This makes the monitoring process independent from the interactive terminal session.
+
+The service can be inspected using:
 
 ```bash
 sudo systemctl status cloudforge-monitor.service
 ```
 
-Expected:
-
-```text
-active (running)
-```
-
----
-
-# 8. Monitoring Logs
-
-View recent service logs:
+View recent logs:
 
 ```bash
-sudo journalctl -u cloudforge-monitor.service -n 50
+sudo journalctl -u cloudforge-monitor.service -n 100
 ```
 
-Follow the logs:
+Follow logs live:
 
 ```bash
 sudo journalctl -u cloudforge-monitor.service -f
 ```
 
-The monitor prints messages such as:
+---
+
+# 10. Why Systemd Is Used
+
+Running the monitoring script directly inside a terminal would mean that the monitoring process could stop when the terminal session ends.
+
+Systemd provides:
 
 ```text
-Running health check...
-Application is healthy.
-Waiting 30 seconds...
+Service management
+Automatic restart
+Boot-time startup
+Centralized logs
+Operational status
 ```
 
-When a failure occurs:
+The monitoring service therefore continues independently of an SSM shell session.
+
+---
+
+# 11. Self-Healing Workflow
+
+The self-healing script is:
 
 ```text
-Application is unhealthy.
-Starting self-healing...
+scripts/self-heal.sh
+```
+
+Its workflow is:
+
+```text
+Health Check Failed
+       |
+       v
+Record Detection Time
+       |
+       v
+Inspect Docker Container
+       |
+       v
+Collect Container Logs
+       |
+       v
+Collect Host Kernel Evidence
+       |
+       v
+Attempt Container Recovery
+       |
+       v
+Wait for Health
+       |
+       +---- Healthy
+       |       |
+       |       v
+       |   Create Incident
+       |       |
+       |       v
+       |   Run AI Analyzer
+       |
+       +---- Still Unhealthy
+               |
+               v
+         Recovery Failed
 ```
 
 ---
 
-# 9. Self-Healing Script
+# 12. Failure Detection
 
-The recovery script is:
+When the health check fails, CloudForge records:
 
 ```text
-/opt/cloudforge/scripts/self-heal.sh
+Detection timestamp
+Container status
+Exit code
+OOMKilled state
+Restart count
+Container logs
+Host kernel logs
 ```
 
-The script first checks whether the application is already healthy.
+This information is preserved before the recovery attempt.
 
-If the application is healthy, it exits without performing recovery.
-
-If the health check fails, it starts collecting evidence.
+This is important because recovery can change the runtime state.
 
 ---
 
-# 10. Failure Detection
+# 13. Docker Evidence
 
-When the health check fails, CloudForge records the detection time.
-
-The script then captures Docker state.
-
-Important values include:
+CloudForge collects:
 
 ```text
 Container status
@@ -287,156 +368,113 @@ Exit code
 OOMKilled
 Restart count
 Container logs
-Host kernel logs
 ```
 
-This information helps determine what happened before recovery.
+The information is obtained using Docker inspection and logs.
 
----
+For example:
 
-# 11. Docker Evidence
-
-CloudForge collects:
-
-```text
-Status
-ExitCode
-OOMKilled
-RestartCount
+```bash
+docker inspect cloudforge-api
 ```
 
-Example:
-
-```text
-Status: exited
-ExitCode: 137
-OOMKilled: false
-RestartCount: 0
-```
-
-The exact values depend on the failure being tested.
-
----
-
-# 12. Container Logs
-
-The self-healing script captures the last 50 lines of Docker logs:
+and:
 
 ```bash
 docker logs --tail 50 cloudforge-api
 ```
 
-These logs are stored in the incident record.
-
-This allows the incident to retain application-level evidence from before recovery.
-
 ---
 
-# 13. Host Evidence
+# 14. Host Evidence
 
-CloudForge also collects recent kernel messages:
+CloudForge also captures recent kernel logs:
 
 ```bash
 sudo dmesg -T | tail -50
 ```
 
-This provides additional host-level context.
+This can provide additional context around:
 
-For example, Docker networking events may appear in the kernel logs when a container is stopped or removed.
+```text
+Docker networking
+Process termination
+Kernel events
+Container lifecycle events
+Other host-level activity
+```
+
+Host evidence does not automatically prove the exact root cause.
+
+It is supporting evidence.
 
 ---
 
-# 14. Recovery Action
+# 15. Container Recovery
 
-The current recovery action is:
-
-```text
-docker start
-```
-
-If necessary, the script falls back to:
+The primary recovery action is:
 
 ```text
-docker restart
-```
-
-The recovery flow is:
-
-```text
-Health Check Failed
-        ↓
-Collect Evidence
-        ↓
 docker start cloudforge-api
-        ↓
-Wait
-        ↓
-Health Check
 ```
+
+If required, the script falls back to:
+
+```text
+docker restart cloudforge-api
+```
+
+The purpose is to restore the existing application container rather than rebuild or redeploy the application.
 
 ---
 
-# 15. Recovery Verification
+# 16. Recovery Verification
 
-After restarting the container, CloudForge does not immediately assume that recovery succeeded.
+Starting the container is not considered successful recovery by itself.
 
-It repeatedly checks:
+CloudForge repeatedly checks:
 
 ```text
 http://127.0.0.1:8000/health
 ```
 
-for a limited period.
-
-Once the API becomes healthy:
+The current recovery loop checks the application for up to approximately:
 
 ```text
-Recovery successful
+60 seconds
 ```
 
-is recorded.
+using repeated checks.
 
-If the application never becomes healthy:
-
-```text
-Recovery FAILED
-```
-
-is reported.
+The recovery process exits successfully only after the application becomes healthy.
 
 ---
 
-# 16. Recovery Timing
+# 17. Recovery Duration
 
-The recovery script records:
+When recovery succeeds, CloudForge calculates:
 
 ```text
-detected_at
-recovered_at
 recovery_duration_seconds
 ```
 
-This allows CloudForge to measure how long recovery took.
+This value is stored in the incident record.
 
 Example:
 
 ```json
 {
-  "detected_at": "2026-09-28T06:17:31Z",
-  "recovered_at": "2026-09-28T06:17:33Z",
   "recovery_duration_seconds": 2
 }
 ```
 
-The actual recovery time varies depending on the failure and environment.
+This provides measurable evidence of recovery performance.
 
 ---
 
-# 17. Incident Records
+# 18. Incident Records
 
-Successful recovery creates a JSON incident record.
-
-Location:
+After successful recovery, CloudForge creates a JSON incident file under:
 
 ```text
 /opt/cloudforge/incidents/
@@ -448,7 +486,7 @@ Example:
 incident-2026-09-28-061731.json
 ```
 
-The incident contains information such as:
+The incident record contains:
 
 ```text
 Incident ID
@@ -459,7 +497,6 @@ Failure type
 Detection time
 Recovery action
 Recovery time
-Recovery duration
 Recovery status
 Health status
 Docker evidence
@@ -468,9 +505,9 @@ Host evidence
 
 ---
 
-# 18. Example Incident Structure
+# 19. Incident Structure
 
-A simplified incident looks like:
+A simplified incident record looks like:
 
 ```json
 {
@@ -479,382 +516,64 @@ A simplified incident looks like:
   "application": "cloudforge-api",
   "version": "1.0.0",
   "failure_type": "container_stopped",
-  "detected_at": "...",
+  "detected_at": "timestamp",
   "recovery_action": "docker_start",
-  "recovered_at": "...",
+  "recovered_at": "timestamp",
   "recovery_duration_seconds": 2,
   "recovery_status": "successful",
-  "health_status": "healthy"
+  "health_status": "healthy",
+  "docker_evidence": {},
+  "host_evidence": {}
 }
 ```
 
-The actual incident record also contains Docker and host evidence.
+The actual record contains the captured evidence.
 
 ---
 
-# 19. Runtime Status Publisher
+# 20. AI Incident Analysis
 
-CloudForge also has a runtime status publisher:
-
-```text
-/opt/cloudforge/scripts/status-publisher.sh
-```
-
-It continuously reads Docker container state and writes:
+After an incident record is created, CloudForge invokes:
 
 ```text
-/opt/cloudforge/runtime/status.json
+analyzer/run_analyzer.sh
 ```
 
-The file contains information such as:
+The analyzer reads the latest incident JSON.
+
+The AI analyzer uses Google Gemini.
+
+The current working model used during development is:
 
 ```text
-Container name
-Container status
-Running state
-Health status
-Exit code
-OOM status
-Restart count
-Image
-Start time
+gemini-3.6-flash
 ```
+
+The API key is stored as an environment variable and is not committed to GitHub.
 
 ---
 
-# 20. Status Publisher Service
+# 21. AI Analysis Workflow
 
-The publisher runs through:
-
-```text
-cloudforge-status-publisher.service
-```
-
-Check it:
-
-```bash
-sudo systemctl status cloudforge-status-publisher.service
-```
-
-Expected:
+The workflow is:
 
 ```text
-active (running)
+Incident JSON
+      |
+      v
+AI Analyzer
+      |
+      v
+Gemini
+      |
+      v
+Structured Analysis
+      |
+      v
+AI Report
 ```
 
-This allows other CloudForge components, especially the dashboard, to read current container state without directly controlling Docker.
-
----
-
-# 21. Self-Healing Test — Container Stop
-
-A controlled failure can be created with:
-
-```bash
-docker stop cloudforge-api
-```
-
-This intentionally stops the API container.
-
-Immediately after the stop, the application health check should eventually fail.
-
-The monitor detects the failure.
-
-The recovery process then:
-
-```text
-Health check fails
-      ↓
-Evidence collected
-      ↓
-Container restarted
-      ↓
-Health verified
-      ↓
-Incident recorded
-```
-
----
-
-# 22. Expected Result
-
-After the test:
-
-```bash
-docker ps
-```
-
-should show the container running again.
-
-Then:
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-should return:
-
-```json
-{
-  "status": "healthy",
-  "version": "1.0.0"
-}
-```
-
-An incident JSON file should also appear in:
-
-```text
-/opt/cloudforge/incidents/
-```
-
----
-
-# 23. Self-Healing Test — Force Kill
-
-A second controlled failure can be created with:
-
-```bash
-docker kill cloudforge-api
-```
-
-This forcefully terminates the container.
-
-CloudForge should detect the failure and attempt recovery.
-
-The expected flow is:
-
-```text
-docker kill
-     ↓
-Health check fails
-     ↓
-Monitor detects failure
-     ↓
-Evidence collected
-     ↓
-Container started
-     ↓
-Health check succeeds
-     ↓
-Incident created
-```
-
----
-
-# 24. Exit Code 137
-
-A forcefully terminated container may produce:
-
-```text
-Exit code: 137
-```
-
-Exit code `137` commonly indicates termination by `SIGKILL`.
-
-However, CloudForge should not automatically treat this as proof of an out-of-memory failure.
-
-The incident record separately records:
-
-```text
-OOMKilled
-```
-
-For example:
-
-```text
-ExitCode: 137
-OOMKilled: false
-```
-
-This means the evidence does not establish that the container was killed by the Linux OOM killer.
-
-The AI analyzer should also state when the exact root cause cannot be determined from the available evidence.
-
----
-
-# 25. Network Failure Test
-
-CloudForge was also tested against a network-level failure.
-
-The controlled failure was:
-
-```bash
-sudo iptables -I INPUT -p tcp --dport 8000 -j REJECT
-```
-
-This blocks incoming TCP connections to port `8000`.
-
-The health check then fails.
-
-CloudForge detects the failure and attempts its normal recovery action.
-
----
-
-# 26. Network Failure Limitation
-
-Restarting the container does not remove the firewall rule.
-
-Therefore:
-
-```text
-Health Check Failed
-       ↓
-Restart Container
-       ↓
-Health Check Failed
-       ↓
-Firewall still blocking port 8000
-```
-
-The container itself may be healthy while the health check remains inaccessible.
-
-This demonstrates an important limitation of the current recovery policy.
-
----
-
-# 27. Restore the Network
-
-After completing the controlled firewall test, remove the rule:
-
-```bash
-sudo iptables -D INPUT -p tcp --dport 8000 -j REJECT
-```
-
-Then verify:
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-Expected:
-
-```json
-{
-  "status": "healthy",
-  "version": "1.0.0"
-}
-```
-
----
-
-# 28. What CloudForge Currently Handles
-
-### Container-level failure
-
-```text
-Container stops
-       ↓
-Detected
-       ↓
-Restart
-       ↓
-Recovered
-```
-
-### Forceful container termination
-
-```text
-Container killed
-       ↓
-Detected
-       ↓
-Evidence collected
-       ↓
-Restart
-       ↓
-Recovered
-```
-
----
-
-# 29. What CloudForge Does Not Yet Automatically Handle
-
-Examples include:
-
-```text
-Firewall failures
-Network routing failures
-Subnet failures
-Security group configuration problems
-EC2 instance failure
-AWS service outages
-Persistent application bugs
-Bad application deployments
-Database failures
-```
-
-These require different detection and recovery strategies.
-
----
-
-# 30. Recovery Boundary
-
-The current system can be represented as:
-
-```text
-                 CloudForge
-                     |
-               Health Check
-                     |
-              Failure detected
-                     |
-             Collect evidence
-                     |
-             Restart container
-                     |
-             Health verification
-                 /         \
-              Healthy      Failed
-                |             |
-             Incident       Recovery
-             recorded        failure
-```
-
-The important point is that CloudForge currently uses a relatively simple recovery policy:
-
-```text
-If application health fails → restart the container
-```
-
----
-
-# 31. Why Evidence Collection Matters
-
-Simply restarting the container would recover the service but could destroy useful information about the failure.
-
-CloudForge therefore collects evidence before recovery.
-
-The sequence is:
-
-```text
-Failure
-  ↓
-Evidence
-  ↓
-Recovery
-  ↓
-Verification
-  ↓
-Incident Record
-  ↓
-AI Analysis
-```
-
-This makes the system more useful for troubleshooting and learning.
-
----
-
-# 32. AI Incident Analysis
-
-After a successful recovery, CloudForge runs:
-
-```text
-/opt/cloudforge/analyzer/run_analyzer.sh
-```
-
-The analyzer reads the latest incident JSON and generates an AI-assisted report.
-
-The report covers:
+The generated report contains:
 
 ```text
 What happened
@@ -865,190 +584,308 @@ Recovery assessment
 Recommended next actions
 ```
 
-The AI analyzer must distinguish between:
+---
+
+# 22. AI Evidence Policy
+
+The analyzer is instructed to use the incident evidence.
+
+It should distinguish between:
 
 ```text
-Known evidence
-```
-
-and:
-
-```text
+Confirmed evidence
 Possible explanation
+Unknown information
 ```
 
-It should not claim an exact root cause when the incident data cannot establish one.
+For example, an exit code may indicate how a process terminated, but it may not identify exactly who or what caused the termination.
 
-Detailed instructions are documented in:
+Therefore:
 
 ```text
-docs/ai-incident-analyzer.md
+Observed evidence != guaranteed root cause
 ```
+
+This distinction is important for responsible incident analysis.
 
 ---
 
-# 33. Dashboard Integration
+# 23. Example Exit Code 137 Analysis
 
-The dashboard reads CloudForge runtime and incident information.
-
-It can display:
+One tested incident contained:
 
 ```text
-Application status
-Container status
-Docker health
-CPU usage
-Memory usage
-Latest incident
-Recovery information
+Exit code: 137
+OOMKilled: false
+```
+
+Exit code `137` corresponds to a process receiving `SIGKILL`.
+
+However, because:
+
+```text
+OOMKilled = false
+```
+
+the incident evidence did not conclusively establish that the Linux OOM killer caused the termination.
+
+The AI analysis therefore identified the exact root cause as undetermined and recommended checking:
+
+```text
+Docker events
+Deployment activity
+Host activity
+Maintenance activity
+External stop/kill actions
+```
+
+This demonstrates why CloudForge preserves both Docker and host evidence.
+
+---
+
+# 24. Graceful Container Stop Test
+
+CloudForge was intentionally tested with:
+
+```bash
+docker stop cloudforge-api
+```
+
+The expected sequence was:
+
+```text
+Container running
+       |
+       v
+docker stop
+       |
+       v
+Health check fails
+       |
+       v
+Self-healing detects failure
+       |
+       v
+docker start
+       |
+       v
+Health restored
+       |
+       v
+Incident created
+       |
+       v
 AI analysis
 ```
 
-The dashboard does not own the recovery process.
-
-The architecture is:
-
-```text
-                 Dashboard
-                     |
-                     | Read
-                     v
-               FastAPI API
-                     |
-             +-------+-------+
-             |               |
-             v               v
-       Runtime Status    Incident Files
-             |               |
-             |               |
-             +-------+-------+
-                     |
-                     v
-              Display State
-```
-
-The monitoring/self-healing system remains responsible for recovery.
+The test succeeded.
 
 ---
 
-# 34. Testing the Self-Healing System
+# 25. Force Kill Test
 
-Self-healing should be tested using controlled failures.
+CloudForge was also tested using:
 
-Recommended tests:
-
-```text
-Test 1
-Container stop
-
-Test 2
-Container force kill
-
-Test 3
-Network/firewall failure
+```bash
+docker kill cloudforge-api
 ```
 
-Each test should verify:
+This forces the container to terminate.
+
+The self-healing system detected the failure and restarted the container.
+
+The tested incident:
 
 ```text
-[ ] Failure created
-[ ] Failure detected
-[ ] Evidence collected
-[ ] Recovery attempted
-[ ] Health checked
-[ ] Recovery result recorded
-[ ] Incident JSON created
-[ ] AI analysis generated where applicable
+incident-2026-09-23-075737
 ```
 
-Detailed test results are documented in:
+recovered in approximately:
 
 ```text
-docs/chaos-testing.md
+2 seconds
 ```
+
+The application became healthy again.
 
 ---
 
-# 35. Current Test Results
+# 26. Network Failure Test
 
-CloudForge successfully demonstrated automatic recovery for:
+A controlled firewall failure was tested using:
 
-```text
-Container stop
-Container force kill
+```bash
+sudo iptables -I INPUT -p tcp --dport 8000 -j REJECT
 ```
 
-The network/firewall test demonstrated:
+This caused the health check to fail.
+
+CloudForge attempted container recovery.
+
+However, the firewall continued blocking the application port.
+
+Therefore:
 
 ```text
-Failure detection
-+
-Recovery limitation
+Container restart
+        |
+        v
+Port still blocked
+        |
+        v
+Health check still fails
 ```
 
-The network failure was not automatically repaired because the current recovery action only restarts the application container.
+This test demonstrated a boundary of the current recovery mechanism.
 
 ---
 
-# 36. Future Self-Healing Improvements
+# 27. Firewall Rule Removal
 
-The current implementation provides the foundation for a more advanced policy engine.
+The test firewall rule was removed using:
 
-Future recovery policies could distinguish between:
+```bash
+sudo iptables -D INPUT -p tcp --dport 8000 -j REJECT
+```
+
+Once the firewall restriction was removed, application health could be restored.
+
+This demonstrates that some failures require infrastructure-level remediation rather than simply restarting the application.
+
+---
+
+# 28. Self-Healing Boundary
+
+Current capability:
 
 ```text
-Application failure
-        ↓
-Restart container
+Application/container failure
+        |
+        v
+Container restart
+        |
+        v
+Health verification
+```
 
-Container repeatedly failing
-        ↓
-Rollback deployment
+Current limitation:
 
-Memory pressure
-        ↓
-Investigate resource usage
-
+```text
 Network failure
-        ↓
-Validate networking/security configuration
-
-EC2 failure
-        ↓
-Replace/recover instance
-
-Repeated incidents
-        ↓
-Escalate / notify
+Infrastructure failure
+Incorrect configuration
+Host failure
+Dependency failure
+        |
+        v
+May require additional remediation
 ```
 
-The planned AI incident analyzer can eventually help classify incidents, but AI recommendations should remain separate from deterministic recovery controls unless explicitly validated by a policy engine.
+CloudForge does not currently claim automatic recovery for all of these categories.
 
 ---
 
-# 37. Important Safety Rule
+# 29. Runtime Status Publisher
 
-Do not expose destructive chaos or recovery operations as unauthenticated public endpoints.
-
-For example, an endpoint that executes:
+CloudForge also includes:
 
 ```text
-docker kill
-docker stop
-docker restart
+cloudforge-status-publisher.service
 ```
 
-should not be publicly accessible without authentication and authorization.
+Its purpose is to continuously publish the current Docker runtime state.
 
-The current design keeps recovery logic on the EC2 host.
+The status is written to:
+
+```text
+/opt/cloudforge/runtime/status.json
+```
+
+The dashboard reads this information.
 
 ---
 
-# 38. Troubleshooting
+# 30. Runtime Status Architecture
 
-## Monitor is not running
+```text
+Docker
+   |
+   v
+Status Publisher
+   |
+   v
+runtime/status.json
+   |
+   v
+Dashboard
+```
 
-Check:
+The dashboard therefore provides visibility into the runtime state without owning the recovery logic.
+
+---
+
+# 31. Self-Healing and Dashboard Separation
+
+The responsibilities are intentionally separated.
+
+### Self-Healing
+
+```text
+Detect
+Collect evidence
+Recover
+Verify
+Record incident
+Trigger AI analysis
+```
+
+### Dashboard
+
+```text
+Read status
+Display container state
+Display incidents
+Display AI analysis
+Display system metrics
+```
+
+The dashboard does not replace the self-healing engine.
+
+---
+
+# 32. Self-Healing and Jenkins Separation
+
+Jenkins handles deployment.
+
+Self-healing handles runtime failures.
+
+```text
+Jenkins
+   |
+   +--> Build
+   +--> Test
+   +--> Deploy
+   +--> Verify
+```
+
+while:
+
+```text
+Self-Healing
+   |
+   +--> Monitor
+   +--> Detect
+   +--> Recover
+   +--> Analyze
+```
+
+This separation prevents a runtime failure from being treated as a new application deployment.
+
+---
+
+# 33. Monitoring Logs
+
+Check the monitoring service:
 
 ```bash
 sudo systemctl status cloudforge-monitor.service
@@ -1060,144 +897,550 @@ View logs:
 sudo journalctl -u cloudforge-monitor.service -n 100
 ```
 
----
-
-## Self-healing script fails
-
-Run manually:
+Follow logs:
 
 ```bash
-/opt/cloudforge/scripts/self-heal.sh
-```
-
-Then inspect the output.
-
-Check Docker:
-
-```bash
-docker ps -a
-```
-
-Check logs:
-
-```bash
-docker logs --tail 100 cloudforge-api
+sudo journalctl -u cloudforge-monitor.service -f
 ```
 
 ---
 
-## Incident was not created
+# 34. Status Publisher Logs
 
 Check:
 
 ```bash
-ls -la /opt/cloudforge/incidents
+sudo systemctl status cloudforge-status-publisher.service
 ```
 
-Check permissions:
+View:
 
 ```bash
-ls -ld /opt/cloudforge/incidents
-```
-
-Check the monitoring logs:
-
-```bash
-sudo journalctl -u cloudforge-monitor.service -n 100
+sudo journalctl -u cloudforge-status-publisher.service -n 100
 ```
 
 ---
 
-## API remains unhealthy after recovery
+# 35. Check Current Runtime State
 
-Check:
+Run:
 
 ```bash
-docker ps -a
+cat /opt/cloudforge/runtime/status.json
+```
+
+A healthy example contains information similar to:
+
+```json
+{
+  "container": {
+    "name": "cloudforge-api",
+    "status": "running",
+    "running": true,
+    "health": "healthy",
+    "exit_code": 0,
+    "oom_killed": false,
+    "restart_count": 0,
+    "image": "..."
+  }
+}
+```
+
+---
+
+# 36. Check Latest Incident
+
+List incidents:
+
+```bash
+ls -lt /opt/cloudforge/incidents/
+```
+
+Read the latest incident:
+
+```bash
+LATEST=$(ls -t /opt/cloudforge/incidents/*.json | head -n 1)
+cat "$LATEST"
+```
+
+---
+
+# 37. Check Latest AI Analysis
+
+List AI reports:
+
+```bash
+ls -lt /opt/cloudforge/incidents/*-ai.txt
+```
+
+Read the latest:
+
+```bash
+LATEST_AI=$(ls -t /opt/cloudforge/incidents/*-ai.txt | head -n 1)
+cat "$LATEST_AI"
+```
+
+---
+
+# 38. Manual Self-Healing Test
+
+For controlled testing only:
+
+```bash
+docker stop cloudforge-api
+```
+
+Then monitor:
+
+```bash
+sudo journalctl -u cloudforge-monitor.service -f
+```
+
+The expected sequence is:
+
+```text
+Health check failed
+       |
+       v
+Self-healing started
+       |
+       v
+Docker evidence collected
+       |
+       v
+Container restarted
+       |
+       v
+Health restored
+       |
+       v
+Incident created
+       |
+       v
+AI analyzer executed
+```
+
+---
+
+# 39. Manual Health Verification
+
+After recovery:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Expected:
+
+```json
+{
+  "status": "healthy",
+  "version": "1.0.0"
+}
 ```
 
 Then:
 
 ```bash
-docker logs --tail 100 cloudforge-api
+docker ps --filter name=cloudforge-api
 ```
 
-Check the health endpoint:
+The container should be:
 
-```bash
-curl -v http://127.0.0.1:8000/health
-```
-
-Check whether port `8000` is blocked:
-
-```bash
-sudo iptables -L INPUT -n --line-numbers
+```text
+Up
+healthy
 ```
 
 ---
 
-# 39. Final Self-Healing Architecture
+# 40. What Self-Healing Does Not Do
+
+The current implementation does not automatically:
 
 ```text
-                  CloudForge API
-                       |
-                       v
-                 Health Check
-                       |
-              +--------+--------+
-              |                 |
-           Healthy           Failure
-              |                 |
-            Wait          Collect Evidence
-              |                 |
-              |          Restart Container
-              |                 |
-              |          Health Verification
-              |                 |
-              |          +------+------+
-              |          |             |
-              |       Recovered       Failed
-              |          |             |
-              |      Incident       Recovery
-              |       Record         Failure
-              |          |
-              |          v
-              |     AI Analyzer
-              |          |
-              +----------+
-                       |
-                   Dashboard
+Create a new EC2 instance
+Replace the host
+Modify security groups
+Remove firewall rules
+Modify Terraform
+Automatically rollback deployments
+Perform blue/green deployments
+Perform canary deployments
+Guarantee root-cause identification
 ```
+
+These are future extension areas.
 
 ---
 
-# 40. Summary
+# 41. Future Self-Healing Architecture
 
-CloudForge's current self-healing mechanism provides:
+A future policy-driven system could extend the current workflow:
 
 ```text
-Health monitoring
-        +
+Failure
+   |
+   v
+Evidence Collection
+   |
+   v
+Failure Classification
+   |
+   v
+Policy Engine
+   |
+   +---- Container Failure
+   |        |
+   |        v
+   |     Restart
+   |
+   +---- Network Failure
+   |        |
+   |        v
+   |     Network Remediation
+   |
+   +---- Deployment Failure
+   |        |
+   |        v
+   |     Rollback
+   |
+   +---- Host Failure
+            |
+            v
+       Infrastructure
+         Recovery
+```
+
+This is a future architecture and is not currently implemented.
+
+---
+
+# 42. Future AI Integration
+
+The current AI analyzer is primarily an incident analysis component.
+
+A future implementation could use AI to assist with:
+
+```text
+Incident classification
+Evidence correlation
+Suggested remediation
+Failure pattern detection
+Operational recommendations
+```
+
+Any automated remediation should be controlled through explicit policies rather than allowing unrestricted AI actions.
+
+---
+
+# 43. Security Considerations
+
+Self-healing scripts execute operational commands.
+
+Therefore:
+
+```text
+Do not expose self-healing shell commands directly to the public internet.
+Do not expose unrestricted docker commands through an API.
+Do not commit AWS credentials.
+Do not commit Gemini API keys.
+Do not expose internal incident files unnecessarily.
+```
+
+The current dashboard is intended as a staging/learning environment.
+
+A production implementation should add appropriate authentication and authorization before exposing operational actions.
+
+---
+
+# 44. Incident Evidence Retention
+
+Incident files provide a local audit trail.
+
+They can be used to review:
+
+```text
+When the failure occurred
+What Docker reported
+What the host reported
+What recovery action was attempted
+How long recovery took
+Whether recovery succeeded
+What AI analysis concluded
+```
+
+This makes the system useful not only for recovery but also for learning and debugging.
+
+---
+
+# 45. Chaos Testing Relationship
+
+Self-healing capabilities are verified through controlled chaos tests.
+
+The current documented tests include:
+
+```text
+Container Stop
+Container Force Kill
+Network/Firewall Failure
+```
+
+The results demonstrate:
+
+```text
+Detection
+Recovery
+Recovery measurement
+Failure boundaries
+```
+
+See:
+
+```text
+docs/chaos-testing.md
+```
+
+for the detailed chaos-testing documentation.
+
+---
+
+# 46. Load Testing Relationship
+
+Load testing is separate from self-healing testing.
+
+Load testing verifies application performance under concurrent requests.
+
+Self-healing testing verifies:
+
+```text
 Failure detection
-        +
-Docker evidence collection
-        +
-Host evidence collection
-        +
-Automatic container recovery
-        +
-Recovery verification
-        +
-Incident recording
-        +
-AI-assisted incident analysis
+Recovery
+Incident creation
 ```
 
-The system is intentionally designed with a clear recovery boundary.
+The load testing documentation is:
 
-The current policy is strongest for failures that can be resolved by restarting the application container. Network and infrastructure failures require additional recovery policies.
+```text
+docs/load-testing.md
+```
 
-This provides the foundation for the future CloudForge policy engine and more advanced automated remediation.
+---
+
+# 47. Operational Metrics
+
+Important self-healing metrics include:
+
+```text
+Failure detection time
+Recovery duration
+Recovery success/failure
+Container restart count
+Exit code
+OOMKilled state
+Incident count
+```
+
+The dashboard exposes several of these operational signals.
+
+---
+
+# 48. Example Successful Recovery
+
+A typical successful recovery looks like:
+
+```text
+00:00  Application healthy
+00:00  Container intentionally stopped
+00:30  Health check detects failure
+00:30  Evidence collected
+00:30  Container restarted
+00:32  Application healthy
+00:32  Incident created
+00:32  AI analysis started
+```
+
+The exact timing depends on the monitoring interval and application startup time.
+
+---
+
+# 49. Why the Detection Time Matters
+
+The monitor checks every:
+
+```text
+30 seconds
+```
+
+Therefore a failure may not be detected immediately.
+
+For example:
+
+```text
+Failure at 10:00:05
+       |
+       v
+Next health check
+10:00:30
+       |
+       v
+Detection
+```
+
+The actual recovery duration should therefore be interpreted separately from the monitoring detection interval.
+
+The incident's `recovery_duration_seconds` measures the recorded recovery process from detection to successful recovery.
+
+---
+
+# 50. Self-Healing Verification Checklist
+
+Before considering the self-healing system verified:
+
+```text
+[ ] health-check.sh works
+[ ] monitor.sh runs
+[ ] cloudforge-monitor.service is active
+[ ] Health endpoint is healthy
+[ ] Container stop test works
+[ ] Container kill test works
+[ ] Recovery is verified through /health
+[ ] Incident JSON is created
+[ ] Docker evidence is recorded
+[ ] Host evidence is recorded
+[ ] AI analysis is generated
+[ ] Dashboard displays latest incident
+[ ] Network failure limitation is documented
+```
+
+---
+
+# 51. Current Verified Results
+
+CloudForge has been tested with controlled failures.
+
+### Container Stop
+
+```text
+Failure:
+docker stop cloudforge-api
+
+Result:
+Automatic recovery successful.
+```
+
+### Container Force Kill
+
+```text
+Failure:
+docker kill cloudforge-api
+
+Result:
+Automatic recovery successful.
+```
+
+### Network Failure
+
+```text
+Failure:
+Firewall blocks TCP port 8000
+
+Result:
+Failure detected.
+Container restart attempted.
+Recovery remained blocked by the firewall.
+```
+
+The third test establishes an explicit boundary of the current self-healing implementation.
+
+---
+
+# 52. Overall Architecture
+
+The complete runtime architecture is:
+
+```text
+                         +----------------------+
+                         |    CloudForge API    |
+                         |        :8000         |
+                         +----------+-----------+
+                                    |
+                                    v
+                              Health Check
+                                    |
+                                    v
+                              Monitor Loop
+                                    |
+                         +----------+----------+
+                         |                     |
+                      Healthy                Failed
+                         |                     |
+                         v                     v
+                     Continue             Self-Healing
+                                               |
+                         +---------------------+------------------+
+                         |                     |                  |
+                         v                     v                  v
+                  Docker Evidence      Host Evidence       Recovery
+                         |                     |                  |
+                         +---------------------+------------------+
+                                               |
+                                               v
+                                        Health Verification
+                                               |
+                                  +------------+------------+
+                                  |                         |
+                               Success                    Failure
+                                  |                         |
+                                  v                         v
+                           Incident JSON              Recovery Failed
+                                  |
+                                  v
+                            AI Analyzer
+                                  |
+                                  v
+                            AI Report
+                                  |
+                                  v
+                              Dashboard
+```
+
+---
+
+# 53. Final Summary
+
+CloudForge self-healing provides a complete runtime recovery loop for supported container-level failures:
+
+```text
+Detect
+  ↓
+Collect Evidence
+  ↓
+Recover
+  ↓
+Verify
+  ↓
+Record
+  ↓
+Analyze
+```
+
+The current system successfully demonstrates:
+
+```text
+Automated health monitoring
+Container failure detection
+Automatic container recovery
+Recovery verification
+Incident evidence collection
+AI-assisted incident analysis
+Operational dashboard visibility
+Controlled chaos testing
+```
+
+At the same time, CloudForge explicitly documents its current boundaries.
+
+The current implementation is focused on **container-level recovery**, while broader infrastructure remediation, automated rollback, advanced policy engines, and more sophisticated recovery strategies remain future extensions.
 
 ```
 ```
