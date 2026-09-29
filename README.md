@@ -1,11 +1,11 @@
 # CloudForge — Self-Healing AWS DevOps & AI Incident Response Platform
 
-CloudForge is a hands-on AWS DevOps project that demonstrates how to build, deploy, monitor, automatically recover, analyze, and test a containerized application on AWS.
+CloudForge is a hands-on AWS DevOps platform that demonstrates how to provision infrastructure, containerize an application, deploy it through CI/CD, monitor its health, automatically recover container failures, collect incident evidence, analyze incidents using Google Gemini AI, and visualize the system through a live DevOps dashboard.
 
 The project combines:
 
 - AWS infrastructure provisioning with Terraform
-- EC2 and VPC networking
+- AWS VPC and EC2
 - IAM and AWS Systems Manager
 - Docker containerization
 - Amazon ECR
@@ -18,59 +18,337 @@ The project combines:
 - Chaos testing
 - Load testing
 - CloudWatch logging
+- Multi-environment Terraform structure
 
-The goal is to demonstrate a complete DevOps lifecycle rather than only individual AWS or Docker commands.
+The goal is to demonstrate a complete DevOps lifecycle rather than isolated AWS, Docker, or Jenkins commands.
 
 ---
 
 ## Architecture
 
+CloudForge is designed as a self-healing AWS DevOps platform combining
+Infrastructure as Code, CI/CD, containerization, monitoring, automated
+recovery, AI-assisted incident analysis, and operational visibility.
+
+![CloudForge Architecture](docs/assets/cloudforge-architecture.png)
+
 ```text
                          GitHub
-                           │
-                           ▼
+                            |
+                            v
                     Jenkins CI/CD
-                           │
-                 Build + Test + Push
-                           │
-                           ▼
-                  Amazon ECR Repository
-                           │
-                           ▼
-                    AWS SSM Deploy
-                           │
-                           ▼
-              ┌─────────────────────────┐
-              │      AWS Staging EC2    │
-              │                         │
-              │  ┌───────────────────┐  │
-              │  │   CloudForge API  │  │
-              │  │   Docker          │  │
-              │  │   Port 8000       │  │
-              │  └───────────────────┘  │
-              │                         │
-              │  Health Monitor         │
-              │       │                 │
-              │       ▼                 │
-              │  Self-Healing           │
-              │       │                 │
-              │       ▼                 │
-              │  Incident JSON          │
-              │       │                 │
-              │       ▼                 │
-              │  Gemini AI Analyzer     │
-              │                         │
-              │  Status Publisher       │
-              └───────────┬─────────────┘
-                          │
-                          ▼
-                 CloudForge Dashboard
-                    Port 8080
+                            |
+                  Build + Test + Push
+                            |
+                            v
+                     Amazon ECR
+                            |
+                            v
+                    AWS Systems Manager
+                            |
+                            v
+              +---------------------------+
+              |       AWS Staging EC2     |
+              |                           |
+              |   +-------------------+   |
+              |   |   CloudForge API  |   |
+              |   |   Docker :8000    |   |
+              |   +-------------------+   |
+              |             |             |
+              |             v             |
+              |      Health Monitor       |
+              |             |             |
+              |             v             |
+              |       Self-Healing        |
+              |             |             |
+              |             v             |
+              |      Incident JSON        |
+              |             |             |
+              |             v             |
+              |      Gemini AI Analyzer    |
+              |                           |
+              |      Status Publisher      |
+              |             |             |
+              +-------------|-------------+
+                            |
+                            v
+                    CloudForge Dashboard
+                         :8080
+````
+
+### Recovery lifecycle
+
+```text
+Application
+     |
+     v
+Health Check
+     |
+     +-------------------+
+     |                   |
+  Healthy              Failed
+     |                   |
+     v                   v
+ Continue         Collect Evidence
+                         |
+                         v
+                    Self-Healing
+                         |
+                         v
+                  Restart Container
+                         |
+                         v
+                    Health Check
+                         |
+                +--------+--------+
+                |                 |
+             Healthy            Failed
+                |                 |
+                v                 v
+         Incident Record    Recovery Failed
+                |
+                v
+          Gemini Analysis
+                |
+                v
+            Dashboard
 ```
 
 ---
 
-# 1. Project Structure
+# Features
+
+## Infrastructure as Code
+
+Terraform manages the AWS infrastructure.
+
+Current structure:
+
+```text
+terraform/
+├── modules/
+│   ├── network/
+│   └── compute/
+└── environments/
+    ├── dev/
+    └── staging/
+```
+
+The infrastructure includes:
+
+* VPC
+* Subnet
+* Internet Gateway
+* Route Table
+* Security Groups
+* EC2
+* IAM Role
+* IAM Instance Profile
+* AWS Systems Manager integration
+* CloudWatch resources
+
+---
+
+## Containerization
+
+The CloudForge API is containerized using Docker.
+
+```text
+Python + FastAPI
+       |
+       v
+Docker Image
+       |
+       v
+cloudforge-api
+       |
+       v
+Port 8000
+```
+
+The application includes a Docker health check.
+
+---
+
+## CI/CD
+
+Jenkins automates the main deployment workflow:
+
+```text
+GitHub
+   |
+   v
+Jenkins
+   |
+   +--> Checkout
+   |
+   +--> Test
+   |
+   +--> Docker Build
+   |
+   +--> Push to ECR
+   |
+   +--> Deploy through SSM
+   |
+   +--> Health Verification
+```
+
+---
+
+## Self-Healing
+
+CloudForge continuously checks:
+
+```text
+http://127.0.0.1:8000/health
+```
+
+If the health check fails:
+
+```text
+Health Failure
+      |
+      v
+Evidence Collection
+      |
+      v
+Container Restart
+      |
+      v
+Health Verification
+      |
+      v
+Incident JSON
+      |
+      v
+Gemini Analysis
+```
+
+The current implementation automatically recovers application/container failures that can be fixed by restarting the container.
+
+---
+
+## Incident Evidence
+
+When a failure is detected and successfully recovered, CloudForge creates a structured incident JSON record.
+
+Incident evidence includes:
+
+* Incident ID
+* Environment
+* Application
+* Version
+* Failure type
+* Detection time
+* Recovery action
+* Recovery time
+* Recovery duration
+* Recovery status
+* Health status
+* Docker status
+* Exit code
+* OOM status
+* Restart count
+* Container logs
+* Host kernel logs
+
+---
+
+## AI Incident Analyzer
+
+CloudForge uses Google Gemini to analyze incident evidence.
+
+The analyzer produces:
+
+1. What happened
+2. Likely cause
+3. Impact
+4. Recovery performed
+5. Recovery assessment
+6. Recommended next actions
+
+The analyzer is evidence-based and is instructed to clearly state when the exact root cause cannot be determined from the available evidence.
+
+---
+
+## Live DevOps Dashboard
+
+CloudForge has a separate dashboard container.
+
+```text
+Browser
+   |
+   v
+Dashboard :8080
+   |
+   v
+FastAPI
+   |
+   +--> Container Status
+   |
+   +--> System Metrics
+   |
+   +--> Incident Data
+   |
+   +--> AI Analysis
+```
+
+The dashboard provides visibility into:
+
+* Application status
+* Environment
+* Container state
+* Docker health
+* CPU usage
+* Memory usage
+* Runtime information
+* Incident information
+* Recovery activity
+* AI incident analysis
+
+Dashboard source:
+
+```text
+dashboard/
+├── Dockerfile
+├── main.py
+├── requirements.txt
+├── services/
+│   ├── docker_service.py
+│   ├── incident_service.py
+│   └── system_service.py
+└── static/
+    ├── index.html
+    ├── style.css
+    └── dashboard.js
+```
+
+---
+
+# Technology Stack
+
+| Area                   | Technology                                     |
+| ---------------------- | ---------------------------------------------- |
+| Cloud                  | AWS                                            |
+| Infrastructure as Code | Terraform                                      |
+| Compute                | Amazon EC2                                     |
+| Networking             | VPC, Subnet, Route Table, Internet Gateway     |
+| Access                 | IAM + AWS Systems Manager                      |
+| Containerization       | Docker                                         |
+| Container Registry     | Amazon ECR                                     |
+| CI/CD                  | Jenkins                                        |
+| Application            | Python + FastAPI                               |
+| Monitoring             | Bash + systemd                                 |
+| Self-Healing           | Docker + Bash                                  |
+| AI Analysis            | Google Gemini                                  |
+| Dashboard              | HTML + CSS + JavaScript + FastAPI              |
+| Logging                | Amazon CloudWatch                              |
+| Testing                | Pytest + custom load testing                   |
+| Chaos Testing          | Docker stop/kill + controlled firewall failure |
+
+---
+
+# Project Structure
 
 ```text
 cloudforge/
@@ -78,22 +356,25 @@ cloudforge/
 ├── app/
 │   ├── main.py
 │   ├── Dockerfile
-│   ├── requirements.txt
-│   │
-│   ├── services/
-│   │   ├── docker_service.py
-│   │   ├── incident_service.py
-│   │   └── system_service.py
-│   │
-│   └── static/
-│       ├── index.html
-│       ├── style.css
-│       └── dashboard.js
+│   └── requirements.txt
 │
 ├── analyzer/
 │   ├── ai_analyzer.py
 │   ├── requirements.txt
 │   └── run_analyzer.sh
+│
+├── dashboard/
+│   ├── Dockerfile
+│   ├── main.py
+│   ├── requirements.txt
+│   ├── services/
+│   │   ├── docker_service.py
+│   │   ├── incident_service.py
+│   │   └── system_service.py
+│   └── static/
+│       ├── index.html
+│       ├── style.css
+│       └── dashboard.js
 │
 ├── scripts/
 │   ├── health-check.sh
@@ -108,16 +389,22 @@ cloudforge/
 │   ├── modules/
 │   │   ├── network/
 │   │   └── compute/
-│   │
 │   └── environments/
 │       ├── dev/
 │       └── staging/
 │
 ├── docs/
 │   ├── architecture.md
+│   ├── setup.md
+│   ├── deployment.md
+│   ├── self-healing.md
+│   ├── ai-incident-analyzer.md
+│   ├── dashboard.md
+│   ├── ci-cd.md
 │   ├── chaos-testing.md
-│   ├── learning-notes.md
 │   ├── load-testing.md
+│   ├── cleanup.md
+│   ├── learning-notes.md
 │   └── roadmap.md
 │
 ├── Jenkinsfile
@@ -127,40 +414,235 @@ cloudforge/
 
 ---
 
-# 2. Technologies Used
+# Quick Start
 
-| Area | Technology |
-|---|---|
-| Cloud | AWS |
-| Infrastructure as Code | Terraform |
-| Compute | EC2 |
-| Networking | VPC, Subnet, Route Table, Internet Gateway |
-| Access | IAM + AWS Systems Manager |
-| Containerization | Docker |
-| Container Registry | Amazon ECR |
-| CI/CD | Jenkins |
-| Application | Python + FastAPI |
-| Monitoring | Bash + systemd |
-| Self-Healing | Docker + Bash |
-| AI Analysis | Google Gemini |
-| Dashboard | HTML + CSS + JavaScript + FastAPI |
-| Logging | Amazon CloudWatch |
-| Testing | Pytest + custom load test |
-| Chaos Testing | Docker stop/kill + firewall failure |
+There are two ways to use CloudForge.
+
+### Option 1 — Run locally with Docker
+
+Use this if you want to clone the repository and test the application/dashboard without creating AWS infrastructure.
+
+### Option 2 — Full AWS deployment
+
+Use this if you want to reproduce the complete CloudForge AWS environment with Terraform, EC2, SSM, ECR, monitoring, self-healing, AI analysis, and Jenkins.
 
 ---
 
-# 3. Prerequisites
+# Option 1 — Run Locally with Docker
 
-Install/configure the following on your local machine:
+## 1. Prerequisites
+
+Install:
+
+* Git
+* Docker
+
+Verify:
+
+```bash
+git --version
+docker --version
+```
+
+---
+
+## 2. Clone the Repository
+
+```bash
+git clone https://github.com/Savio9481/cloudforge.git
+```
+
+Move into the project:
+
+```bash
+cd cloudforge
+```
+
+Verify:
+
+```bash
+git status
+```
+
+You should see:
 
 ```text
-Git
-AWS CLI
-Terraform
-An AWS account
-Docker (optional locally)
+On branch main
 ```
+
+---
+
+# 3. Build the API
+
+From the repository root:
+
+```bash
+docker build -t cloudforge-api:1.0.0 ./app
+```
+
+Verify:
+
+```bash
+docker images
+```
+
+---
+
+# 4. Run the API
+
+```bash
+docker run -d \
+  --name cloudforge-api \
+  -p 8000:8000 \
+  --restart unless-stopped \
+  cloudforge-api:1.0.0
+```
+
+Check the container:
+
+```bash
+docker ps
+```
+
+---
+
+# 5. Test the API
+
+Run:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Expected:
+
+```json
+{"status":"healthy","version":"1.0.0"}
+```
+
+You can also open:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+to view the FastAPI documentation.
+
+---
+
+# 6. Build the Dashboard
+
+The dashboard is a separate application and must be built from the `dashboard/` directory.
+
+From the repository root:
+
+```bash
+docker build -t cloudforge-dashboard:1.0.5 ./dashboard
+```
+
+---
+
+# 7. Create Runtime and Incident Directories
+
+For the dashboard to read runtime and incident information:
+
+```bash
+mkdir -p runtime
+mkdir -p incidents
+```
+
+---
+
+# 8. Run the Dashboard
+
+```bash
+docker run -d \
+  --name cloudforge-dashboard \
+  -p 8080:8000 \
+  -v "$(pwd)/runtime:/opt/cloudforge/runtime:ro" \
+  -v "$(pwd)/incidents:/opt/cloudforge/incidents:ro" \
+  --restart unless-stopped \
+  cloudforge-dashboard:1.0.5
+```
+
+On Windows PowerShell, use:
+
+```powershell
+docker run -d `
+  --name cloudforge-dashboard `
+  -p 8080:8000 `
+  -v "${PWD}/runtime:/opt/cloudforge/runtime:ro" `
+  -v "${PWD}/incidents:/opt/cloudforge/incidents:ro" `
+  --restart unless-stopped `
+  cloudforge-dashboard:1.0.5
+```
+
+---
+
+# 9. Open the Dashboard
+
+Open:
+
+```text
+http://127.0.0.1:8080/dashboard/
+```
+
+The dashboard container should be visible with:
+
+```bash
+docker ps
+```
+
+Check dashboard health:
+
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+Test dashboard API:
+
+```bash
+curl http://127.0.0.1:8080/api/dashboard
+```
+
+---
+
+# 10. Stop the Local Containers
+
+API:
+
+```bash
+docker stop cloudforge-api
+```
+
+Dashboard:
+
+```bash
+docker stop cloudforge-dashboard
+```
+
+Remove them if required:
+
+```bash
+docker rm cloudforge-api
+docker rm cloudforge-dashboard
+```
+
+---
+
+# Option 2 — Full AWS Deployment
+
+The full CloudForge platform uses AWS.
+
+## AWS Prerequisites
+
+Install/configure:
+
+* Git
+* AWS CLI
+* Terraform
+* Docker
+* An AWS account
 
 Verify:
 
@@ -171,18 +653,49 @@ terraform version
 docker --version
 ```
 
-AWS CLI must be configured with credentials that have permission to create the required AWS resources.
+---
+
+# 1. Configure AWS CLI
+
+CloudForge currently uses:
+
+```text
+AWS Region: us-east-1
+```
+
+Configure the AWS CLI:
+
+```bash
+aws configure
+```
+
+Set:
+
+```text
+AWS Access Key ID: <YOUR_ACCESS_KEY>
+AWS Secret Access Key: <YOUR_SECRET_KEY>
+Default region name: us-east-1
+Default output format: json
+```
+
+Verify:
+
+```bash
+aws sts get-caller-identity
+```
+
+Never commit AWS credentials to GitHub.
 
 ---
 
-# 4. Clone the Repository
+# 2. Clone CloudForge
 
 ```bash
 git clone https://github.com/Savio9481/cloudforge.git
 cd cloudforge
 ```
 
-Check the repository:
+Verify:
 
 ```bash
 git status
@@ -197,80 +710,9 @@ main
 
 ---
 
-# 5. Configure AWS CLI
+# 3. Initialize Terraform
 
-CloudForge currently uses:
-
-```text
-AWS Region: us-east-1
-```
-
-Configure AWS CLI:
-
-```bash
-aws configure
-```
-
-Enter your AWS credentials and region.
-
-Example:
-
-```text
-AWS Access Key ID: <YOUR_ACCESS_KEY>
-AWS Secret Access Key: <YOUR_SECRET_KEY>
-Default region name: us-east-1
-Default output format: json
-```
-
-Verify the identity:
-
-```bash
-aws sts get-caller-identity
-```
-
-The command should return the AWS account and IAM identity being used.
-
-Never commit AWS credentials to GitHub.
-
----
-
-# 6. Terraform Infrastructure
-
-CloudForge uses Terraform to create the AWS infrastructure.
-
-The Terraform structure is:
-
-```text
-terraform/
-├── modules/
-│   ├── network/
-│   └── compute/
-│
-└── environments/
-    ├── dev/
-    └── staging/
-```
-
-The infrastructure includes resources such as:
-
-```text
-VPC
-Subnet
-Internet Gateway
-Route Table
-Security Group
-EC2
-IAM Role
-IAM Instance Profile
-SSM permissions
-CloudWatch resources
-```
-
----
-
-# 7. Deploy the Staging Infrastructure
-
-Move into the staging environment:
+Move to the staging environment:
 
 ```bash
 cd terraform/environments/staging
@@ -282,7 +724,9 @@ Initialize Terraform:
 terraform init
 ```
 
-Validate the configuration:
+---
+
+# 4. Validate Terraform
 
 ```bash
 terraform validate
@@ -294,11 +738,19 @@ Expected:
 Success! The configuration is valid.
 ```
 
-Review the infrastructure plan:
+---
+
+# 5. Review the Infrastructure Plan
 
 ```bash
 terraform plan
 ```
+
+Always review the plan before applying infrastructure.
+
+---
+
+# 6. Create the AWS Infrastructure
 
 If the plan is correct:
 
@@ -306,25 +758,21 @@ If the plan is correct:
 terraform apply
 ```
 
-Confirm with:
+Terraform will ask for confirmation.
+
+Enter:
 
 ```text
 yes
 ```
 
-Terraform will create/update the AWS infrastructure.
+Terraform will create/update the required AWS infrastructure.
 
 ---
 
-# 8. Verify Terraform
+# 7. Verify the EC2 Instance
 
-After applying Terraform:
-
-```bash
-terraform output
-```
-
-Check the AWS resources:
+From the AWS CLI:
 
 ```bash
 aws ec2 describe-instances \
@@ -333,7 +781,7 @@ aws ec2 describe-instances \
   --output table
 ```
 
-The staging EC2 instance should eventually show:
+The staging instance should eventually show:
 
 ```text
 running
@@ -341,9 +789,7 @@ running
 
 ---
 
-# 9. Connect to EC2 Using AWS Systems Manager
-
-CloudForge uses AWS Systems Manager instead of requiring SSH access.
+# 8. Connect Using AWS Systems Manager
 
 Find the instance ID:
 
@@ -360,13 +806,13 @@ Start an SSM session:
 aws ssm start-session --target <INSTANCE_ID>
 ```
 
-Switch to the CloudForge user:
+On the EC2 instance:
 
 ```bash
 sudo su - ssm-user
 ```
 
-Move to the project directory:
+Then:
 
 ```bash
 cd /opt/cloudforge
@@ -374,49 +820,9 @@ cd /opt/cloudforge
 
 ---
 
-# 10. Verify EC2 Environment
+# 9. Clone CloudForge on EC2
 
-Check Docker:
-
-```bash
-docker --version
-```
-
-Check Git:
-
-```bash
-git --version
-```
-
-Check Python:
-
-```bash
-python3 --version
-```
-
-Check systemd:
-
-```bash
-systemctl --version
-```
-
-The EC2 host is used as the staging environment for:
-
-```text
-Docker
-CloudForge API
-Monitoring
-Self-Healing
-AI Analyzer
-Dashboard
-Load Testing
-```
-
----
-
-# 11. Clone CloudForge on EC2
-
-If the repository is not already present:
+If the repository does not already exist:
 
 ```bash
 cd /opt
@@ -432,31 +838,23 @@ git status
 
 ---
 
-# 12. Build the CloudForge API
+# 10. Build the API Image on EC2
 
-Move into the application directory:
+From the repository root:
 
 ```bash
-cd /opt/cloudforge/app
+cd /opt/cloudforge
 ```
 
-Build the Docker image:
+Build:
 
 ```bash
-docker build -t cloudforge-api:1.0.0 .
-```
-
-Verify:
-
-```bash
-docker images
+docker build -t cloudforge-api:1.0.0 ./app
 ```
 
 ---
 
-# 13. Run the CloudForge API
-
-Start the API:
+# 11. Run the API Container
 
 ```bash
 docker run -d \
@@ -466,13 +864,13 @@ docker run -d \
   cloudforge-api:1.0.0
 ```
 
-Check the container:
+Check:
 
 ```bash
 docker ps
 ```
 
-Check the health endpoint locally:
+Test:
 
 ```bash
 curl http://127.0.0.1:8000/health
@@ -486,169 +884,40 @@ Expected:
 
 ---
 
-# 14. Docker Health Check
+# 12. Configure Monitoring
 
-The application Dockerfile contains a health check.
-
-Check it:
-
-```bash
-docker ps
-```
-
-The container should eventually show:
+The monitoring system uses:
 
 ```text
-healthy
+scripts/health-check.sh
+scripts/monitor.sh
+scripts/self-heal.sh
 ```
 
-You can also inspect it:
-
-```bash
-docker inspect cloudforge-api \
-  --format '{{.State.Health.Status}}'
-```
-
-Expected:
-
-```text
-healthy
-```
-
----
-
-# 15. Application API
-
-CloudForge uses FastAPI.
-
-Important endpoint:
-
-```text
-GET /health
-```
-
-Example:
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-The endpoint is used by the monitoring system to determine whether the application is healthy.
-
----
-
-# 16. CloudForge Monitoring
-
-The monitoring architecture is:
-
-```text
-monitor.sh
-     │
-     ▼
-health-check.sh
-     │
-     ├── HEALTHY
-     │      │
-     │      ▼
-     │   Continue
-     │
-     └── FAILED
-            │
-            ▼
-       self-heal.sh
-            │
-            ▼
-       Restart container
-            │
-            ▼
-       Check health again
-```
-
-The monitor checks the application repeatedly.
-
-The health check uses:
+The health endpoint is:
 
 ```text
 http://127.0.0.1:8000/health
 ```
 
----
-
-# 17. Health Check
-
-Run manually:
+Run the health check manually:
 
 ```bash
 /opt/cloudforge/scripts/health-check.sh
 ```
 
-Healthy result:
+Expected:
 
 ```text
 CloudForge health check: HEALTHY
 {"status":"healthy","version":"1.0.0"}
 ```
 
-Failure result:
-
-```text
-CloudForge health check: FAILED
-```
-
 ---
 
-# 18. Self-Healing
+# 13. Configure the Monitor Service
 
-CloudForge automatically attempts to recover a failed application container.
-
-The recovery flow is:
-
-```text
-Health Check Fails
-       │
-       ▼
-Failure Detected
-       │
-       ▼
-Collect Docker Evidence
-       │
-       ▼
-Collect Host Evidence
-       │
-       ▼
-Restart Container
-       │
-       ▼
-Wait for Health
-       │
-       ├── Healthy
-       │     │
-       │     ▼
-       │  Incident JSON
-       │
-       └── Still Failed
-             │
-             ▼
-          Recovery Failed
-```
-
-Run the self-healing script manually:
-
-```bash
-/opt/cloudforge/scripts/self-heal.sh
-```
-
----
-
-# 19. Monitor Service
-
-CloudForge uses a systemd service called:
-
-```text
-cloudforge-monitor.service
-```
-
-Check it:
+Check:
 
 ```bash
 sudo systemctl status cloudforge-monitor
@@ -666,43 +935,35 @@ Enable at boot:
 sudo systemctl enable cloudforge-monitor
 ```
 
-Restart:
-
-```bash
-sudo systemctl restart cloudforge-monitor
-```
-
 View logs:
 
 ```bash
 sudo journalctl -u cloudforge-monitor -f
 ```
 
-The monitor continuously runs:
-
-```text
-health-check.sh
-```
-
-and calls:
-
-```text
-self-heal.sh
-```
-
-when the application becomes unhealthy.
-
 ---
 
-# 20. Runtime Status Publisher
+# 14. Configure the Runtime Status Publisher
 
-CloudForge also publishes the current Docker runtime state to:
+CloudForge publishes current container state to:
 
 ```text
 /opt/cloudforge/runtime/status.json
 ```
 
-The publisher tracks:
+Check the service:
+
+```bash
+sudo systemctl status cloudforge-status-publisher
+```
+
+Check the status file:
+
+```bash
+cat /opt/cloudforge/runtime/status.json
+```
+
+The status contains information such as:
 
 ```text
 Container name
@@ -717,131 +978,25 @@ Start time
 Last update
 ```
 
-The service is:
-
-```text
-cloudforge-status-publisher.service
-```
-
-Check it:
-
-```bash
-sudo systemctl status cloudforge-status-publisher
-```
-
-View logs:
-
-```bash
-sudo journalctl -u cloudforge-status-publisher -f
-```
-
-Check the generated status:
-
-```bash
-cat /opt/cloudforge/runtime/status.json
-```
-
-Example:
-
-```json
-{
-  "container": {
-    "name": "cloudforge-api",
-    "status": "running",
-    "running": true,
-    "health": "healthy",
-    "exit_code": 0,
-    "oom_killed": false,
-    "restart_count": 0
-  }
-}
-```
-
 ---
 
-# 21. Incident Records
+# 15. Configure Gemini AI Analyzer
 
-When CloudForge detects and successfully recovers from an incident, it creates an incident JSON file:
-
-```text
-/opt/cloudforge/incidents/
-```
-
-Example:
-
-```text
-incident-2026-09-28-061731.json
-```
-
-Incident information includes:
-
-```text
-Incident ID
-Environment
-Application
-Version
-Failure type
-Detection time
-Recovery action
-Recovery time
-Recovery duration
-Recovery status
-Health status
-Docker evidence
-Host evidence
-Container logs
-Kernel logs
-```
-
-View incidents:
-
-```bash
-ls -lah /opt/cloudforge/incidents
-```
-
-View the latest incident:
-
-```bash
-ls -t /opt/cloudforge/incidents/*.json | head -n 1
-```
-
----
-
-# 22. AI Incident Analyzer
-
-CloudForge uses Google Gemini to analyze incident evidence.
-
-The analyzer receives the incident JSON and asks the AI to explain:
-
-```text
-1. What happened
-2. Likely cause
-3. Impact
-4. Recovery performed
-5. Recovery assessment
-6. Recommended next actions
-```
-
-The analyzer is designed to use the evidence contained in the incident record and clearly state when the exact root cause cannot be determined.
-
----
-
-# 23. Configure Gemini
+The AI analyzer uses Google Gemini.
 
 Create a Gemini API key using your Google AI/Gemini account.
 
-Configure it as an environment variable:
+Configure the key securely on the EC2 host.
+
+Example:
 
 ```bash
 export GEMINI_API_KEY="<YOUR_GEMINI_API_KEY>"
 ```
 
-For a persistent EC2 configuration, store the environment variable using a secure host-level configuration method.
-
-Do not put the real key inside:
+Do not put the real key in:
 
 ```text
-Git
 GitHub
 README.md
 Python source code
@@ -849,19 +1004,21 @@ Dockerfile
 Jenkinsfile
 ```
 
+For persistent configuration, use a secure host-level environment configuration.
+
 Never commit the API key.
 
 ---
 
-# 24. Create the Analyzer Virtual Environment
+# 16. Create the Analyzer Environment
 
-On EC2:
+From:
 
 ```bash
 cd /opt/cloudforge
 ```
 
-Create the virtual environment:
+Create the Python virtual environment:
 
 ```bash
 python3 -m venv .venv
@@ -873,7 +1030,7 @@ Activate it:
 . /opt/cloudforge/.venv/bin/activate
 ```
 
-Install analyzer dependencies:
+Install dependencies:
 
 ```bash
 python -m pip install -r analyzer/requirements.txt
@@ -885,11 +1042,17 @@ Verify:
 python -c "from google import genai; print('Analyzer dependencies OK')"
 ```
 
+Expected:
+
+```text
+Analyzer dependencies OK
+```
+
 ---
 
-# 25. Run the AI Analyzer
+# 17. Run the AI Analyzer
 
-First make sure at least one incident JSON exists.
+First make sure an incident JSON exists.
 
 Then:
 
@@ -904,13 +1067,13 @@ The analyzer selects the latest incident:
 /opt/cloudforge/incidents/*.json
 ```
 
-and creates:
+and creates an AI analysis file:
 
 ```text
 incident-YYYY-MM-DD-HHMMSS-ai.txt
 ```
 
-View the AI analysis:
+View it:
 
 ```bash
 cat /opt/cloudforge/incidents/*-ai.txt
@@ -918,81 +1081,25 @@ cat /opt/cloudforge/incidents/*-ai.txt
 
 ---
 
-# 26. Dashboard
+# 18. Build the Dashboard
 
-CloudForge includes a live DevOps dashboard.
+The dashboard is maintained separately from the API.
 
-The dashboard displays information such as:
-
-```text
-Application status
-Environment
-Container state
-Docker health
-CPU usage
-Memory usage
-Incident information
-AI incident analysis
-Recovery activity
-Runtime information
-Load-testing information
-```
-
-The dashboard communicates with the FastAPI backend.
-
-Architecture:
-
-```text
-Browser
-   │
-   ▼
-CloudForge Dashboard
-   │
-   ▼
-FastAPI
-   │
-   ├── Container Status
-   ├── System Metrics
-   ├── Incident Data
-   └── AI Analysis
-```
-
----
-
-# 27. Dashboard API
-
-The dashboard backend exposes:
-
-```text
-/api/dashboard
-/api/container
-```
-
-Test:
+From the repository root:
 
 ```bash
-curl http://127.0.0.1:8000/api/dashboard
+cd /opt/cloudforge
 ```
-
----
-
-# 28. Build Dashboard Image
-
-The dashboard uses the CloudForge application image structure.
 
 Build:
 
 ```bash
-cd /opt/cloudforge/app
-
-docker build -t cloudforge-dashboard:1.0.0 .
+docker build -t cloudforge-dashboard:1.0.5 ./dashboard
 ```
 
 ---
 
-# 29. Run Dashboard Container
-
-The dashboard runs separately from the API container.
+# 19. Run the Dashboard
 
 ```bash
 docker run -d \
@@ -1001,7 +1108,7 @@ docker run -d \
   -v /opt/cloudforge/runtime:/opt/cloudforge/runtime:ro \
   -v /opt/cloudforge/incidents:/opt/cloudforge/incidents:ro \
   --restart unless-stopped \
-  cloudforge-dashboard:1.0.0
+  cloudforge-dashboard:1.0.5
 ```
 
 Check:
@@ -1010,47 +1117,39 @@ Check:
 docker ps
 ```
 
-Test locally:
+The dashboard should expose:
+
+```text
+0.0.0.0:8080 -> 8000
+```
+
+---
+
+# 20. Test the Dashboard
+
+On EC2:
 
 ```bash
 curl -I http://127.0.0.1:8080/dashboard/
 ```
 
-Open in a browser:
+Test the dashboard API:
+
+```bash
+curl http://127.0.0.1:8080/api/dashboard
+```
+
+If the AWS Security Group allows port 8080, open:
 
 ```text
 http://<EC2_PUBLIC_IP>:8080/dashboard/
 ```
 
----
-
-# 30. Dashboard Live Polling
-
-The dashboard periodically requests:
-
-```text
-/api/dashboard
-```
-
-This allows the UI to update without manually refreshing the browser.
-
-The dashboard can therefore show changes such as:
-
-```text
-HEALTHY
-   ↓
-INCIDENT DETECTED
-   ↓
-SELF-HEALING
-   ↓
-RECOVERED
-   ↓
-AI ANALYSIS
-```
+Do not hard-code the public IP in documentation because the public IP can change when the instance is restarted.
 
 ---
 
-# 31. Amazon ECR
+# Amazon ECR
 
 CloudForge uses Amazon ECR to store application images.
 
@@ -1093,22 +1192,7 @@ docker push \
 
 ---
 
-# 32. Jenkins CI/CD
-
-CloudForge uses Jenkins to automate:
-
-```text
-GitHub
-   │
-   ▼
-Jenkins
-   │
-   ├── Checkout
-   ├── Test
-   ├── Docker Build
-   ├── Push to ECR
-   └── Deploy to EC2 using SSM
-```
+# Jenkins CI/CD
 
 The Jenkins pipeline is defined in:
 
@@ -1116,107 +1200,44 @@ The Jenkins pipeline is defined in:
 Jenkinsfile
 ```
 
----
-
-# 33. Jenkins Pipeline
-
-The pipeline performs the main CI/CD workflow:
-
-```text
-Developer Push
-      │
-      ▼
-GitHub
-      │
-      ▼
-Jenkins
-      │
-      ▼
-Checkout Code
-      │
-      ▼
-Run Tests
-      │
-      ▼
-Build Docker Image
-      │
-      ▼
-Push Image to ECR
-      │
-      ▼
-Deploy Using AWS SSM
-      │
-      ▼
-Wait for Health
-      │
-      ▼
-Deployment Complete
-```
-
----
-
-# 34. Jenkins Configuration
-
-Jenkins requires access to:
+The pipeline performs:
 
 ```text
 GitHub
-AWS
-Amazon ECR
-AWS Systems Manager
-```
-
-Configure the required credentials in Jenkins rather than putting credentials inside the repository.
-
-Create a Jenkins pipeline job pointing to:
-
-```text
-Jenkinsfile
-```
-
-Configure the GitHub webhook so a repository push can trigger Jenkins.
-
----
-
-# 35. Deployment Using Jenkins
-
-After Jenkins is configured, the normal deployment flow becomes:
-
-```bash
-git add .
-git commit -m "Update CloudForge"
-git push origin main
-```
-
-Then:
-
-```text
-GitHub
-  ↓
-Jenkins
-  ↓
+   |
+   v
+Checkout
+   |
+   v
 Tests
-  ↓
+   |
+   v
 Docker Build
-  ↓
-ECR Push
-  ↓
-SSM Deployment
-  ↓
-Container Restart
-  ↓
-Health Check
+   |
+   v
+Push to ECR
+   |
+   v
+Deploy through AWS SSM
+   |
+   v
+Health Verification
 ```
 
-This removes the need to manually build and deploy every application change.
+Jenkins requires appropriate access to:
+
+* GitHub
+* AWS
+* Amazon ECR
+* AWS Systems Manager
+
+Credentials should be stored in Jenkins credentials management rather than inside the repository.
 
 ---
 
-# 36. CloudWatch
+# CloudWatch
 
-CloudForge also integrates with CloudWatch logging.
-
-The staging environment uses the CloudWatch log group:
+CloudForge uses the CloudWatch log group:
 
 ```text
 /cloudforge/staging
@@ -1224,86 +1245,69 @@ The staging environment uses the CloudWatch log group:
 
 CloudWatch can be used to investigate:
 
-```text
-Application activity
-Deployment activity
-Operational events
-Infrastructure-related logs
+* Application activity
+* Deployment activity
+* Operational events
+* Infrastructure-related logs
+
+---
+
+# Testing
+
+## API Health Test
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Expected:
+
+```json
+{"status":"healthy","version":"1.0.0"}
 ```
 
 ---
 
-# 37. Chaos Testing
+# Chaos Testing
 
-CloudForge was intentionally tested by creating controlled failures.
+CloudForge has been tested using controlled failures.
 
-The purpose is to verify:
-
-```text
-Failure detection
-Evidence collection
-Automatic recovery
-Health verification
-Recovery limitations
-```
-
----
-
-# 38. Chaos Test — Container Stop
-
-Stop the API container:
+## Container Stop
 
 ```bash
 docker stop cloudforge-api
 ```
 
-The monitoring system should detect the failed health check.
-
-Expected flow:
+Expected:
 
 ```text
-Container stopped
-      ↓
-Health check fails
-      ↓
+Health failure
+      |
+      v
 Monitor detects failure
-      ↓
-Self-healing starts
-      ↓
+      |
+      v
+Self-healing
+      |
+      v
 Container restarted
-      ↓
-Health check succeeds
-      ↓
-Incident JSON created
-      ↓
-AI analysis generated
-```
-
-Check:
-
-```bash
-docker ps
-```
-
-The application should return to:
-
-```text
-healthy
+      |
+      v
+Health restored
+      |
+      v
+Incident created
 ```
 
 ---
 
-# 39. Chaos Test — Force Kill
-
-Forcefully terminate the container:
+## Container Force Kill
 
 ```bash
 docker kill cloudforge-api
 ```
 
-The monitor should detect the failure and attempt recovery.
-
-Check:
+Verify:
 
 ```bash
 docker ps
@@ -1323,27 +1327,17 @@ Expected:
 
 ---
 
-# 40. Chaos Test — Network Failure
+## Network Failure
 
-A network-level failure can be simulated with:
+A controlled firewall failure can be simulated with:
 
 ```bash
 sudo iptables -I INPUT -p tcp --dport 8000 -j REJECT
 ```
 
-CloudForge will detect that the health check is failing.
+CloudForge detects the health failure.
 
 However, restarting the container does not remove the firewall rule.
-
-Therefore:
-
-```text
-Container Restart
-        ↓
-Still blocked
-        ↓
-Health check still fails
-```
 
 Remove the test rule:
 
@@ -1357,49 +1351,32 @@ Then verify:
 curl http://127.0.0.1:8000/health
 ```
 
----
-
-# 41. Current Self-Healing Boundary
-
-CloudForge currently handles failures that can be recovered by restarting the application container.
-
-It does not automatically repair every possible infrastructure or network problem.
-
-For example:
+This demonstrates an important current limitation:
 
 ```text
-Container stopped       → Recoverable
-Container killed        → Recoverable
-Application restart     → Recoverable
+Container failure
+        |
+        v
+Automatically recoverable
 
-Firewall blocking port  → Detected, but not automatically fixed
-Network infrastructure  → Requires additional recovery logic
-Host failure            → Requires infrastructure-level recovery
+Network/firewall failure
+        |
+        v
+Detected
+        |
+        v
+Requires additional recovery logic
 ```
-
-This limitation is intentional and provides the foundation for future policy-engine and AI-driven recovery improvements.
 
 ---
 
-# 42. Load Testing
+# Load Testing
 
 CloudForge includes:
 
 ```text
 tests/load_test.py
 ```
-
-The test sends concurrent requests to the health endpoint.
-
-Before running it, make sure the target URL inside:
-
-```text
-tests/load_test.py
-```
-
-matches the private IP or reachable address of your current staging EC2 instance.
-
-Do not assume that a previously used EC2 private IP will remain the same after recreating the infrastructure.
 
 Run:
 
@@ -1408,31 +1385,24 @@ cd /opt/cloudforge
 python3 tests/load_test.py
 ```
 
+The test sends concurrent requests to the application health endpoint.
+
+The target URL must match the current reachable address of the staging EC2 instance.
+
+Do not assume that a previously used private IP will remain unchanged after recreating infrastructure.
+
 ---
 
-# 43. Example Load Test Metrics
+# Example Load Test Results
 
-CloudForge was tested with different request/concurrency levels.
+Example measurements from the tested staging environment:
 
-Example results from the staging environment:
-
-```text
-100 requests / concurrency 5
-Success: 100
-Failures: 0
-
-1000 requests / concurrency 10
-Success: 1000
-Failures: 0
-
-2000 requests / concurrency 20
-Success: 2000
-Failures: 0
-
-5000 requests / concurrency 50
-Success: 5000
-Failures: 0
-```
+| Requests | Concurrency | Success | Failures |
+| -------: | ----------: | ------: | -------: |
+|      100 |           5 |     100 |        0 |
+|     1000 |          10 |    1000 |        0 |
+|     2000 |          20 |    2000 |        0 |
+|     5000 |          50 |    5000 |        0 |
 
 One 5000-request private-IP test produced approximately:
 
@@ -1444,79 +1414,89 @@ Average latency: 33.56 ms
 Throughput:     1448.67 requests/sec
 ```
 
-These numbers are measurements from the tested staging environment and should not be treated as universal performance guarantees.
+These are measurements from the tested environment and are not universal performance guarantees.
 
 ---
 
-# 44. Docker Resource Observation
+# Documentation
 
-During load testing, Docker resource usage was also observed.
-
-Example:
+Detailed documentation is available under:
 
 ```text
-CPU:    ~0.25%
-Memory: ~59.53 MiB
-Memory limit: ~7.59 GiB
+docs/
 ```
 
-This showed that the tested workload did not consume a large portion of the available container memory.
+| Document                  | Description                                 |
+| ------------------------- | ------------------------------------------- |
+| `architecture.md`         | Complete system architecture                |
+| `setup.md`                | Detailed installation and environment setup |
+| `deployment.md`           | Deployment workflow                         |
+| `self-healing.md`         | Monitoring and automated recovery           |
+| `ai-incident-analyzer.md` | Gemini incident analysis                    |
+| `dashboard.md`            | Dashboard architecture and implementation   |
+| `ci-cd.md`                | Jenkins CI/CD                               |
+| `chaos-testing.md`        | Failure injection and recovery tests        |
+| `load-testing.md`         | Performance/load testing                    |
+| `cleanup.md`              | AWS cleanup and cost control                |
+| `learning-notes.md`       | Concepts learned during development         |
+| `roadmap.md`              | Future improvements                         |
 
-Actual results will depend on:
+---
+
+# Project Verification
+
+Before considering the project complete, verify:
 
 ```text
-EC2 instance type
-Network
-Application version
-Concurrency
-Request type
-System load
-AWS environment
+[ ] Repository cloned successfully
+[ ] AWS CLI configured
+[ ] Terraform initialized
+[ ] Terraform validate passes
+[ ] Terraform plan reviewed
+[ ] AWS infrastructure created
+[ ] EC2 accessible through SSM
+[ ] Docker installed
+[ ] CloudForge API running
+[ ] /health returns healthy
+[ ] Docker health check works
+[ ] Monitor service running
+[ ] Self-healing tested
+[ ] Incident JSON generated
+[ ] Gemini analyzer works
+[ ] AI analysis generated
+[ ] Runtime status publisher works
+[ ] Dashboard works
+[ ] ECR repository works
+[ ] Jenkins pipeline works
+[ ] CI/CD deployment tested
+[ ] Container stop chaos test completed
+[ ] Container kill chaos test completed
+[ ] Network failure test completed
+[ ] Load test completed
+[ ] Terraform plan verified
+[ ] AWS resources stopped or destroyed
 ```
 
 ---
 
-# 45. Git Workflow
+# Current Self-Healing Boundary
 
-After making changes:
+CloudForge currently focuses on application/container-level recovery.
 
-```bash
-git status
-```
+| Failure                        | Current behavior                        |
+| ------------------------------ | --------------------------------------- |
+| Container stopped              | Automatically recoverable               |
+| Container killed               | Automatically recoverable               |
+| Application restart failure    | Recovery attempted                      |
+| Firewall blocking port         | Detected but not automatically repaired |
+| Network infrastructure failure | Requires additional recovery logic      |
+| Host failure                   | Requires infrastructure-level recovery  |
 
-Review:
-
-```bash
-git diff
-```
-
-Stage:
-
-```bash
-git add .
-```
-
-Commit:
-
-```bash
-git commit -m "Describe the change"
-```
-
-Push:
-
-```bash
-git push origin main
-```
-
-Pull the latest version:
-
-```bash
-git pull origin main
-```
+The current implementation intentionally does not claim to automatically repair every possible infrastructure failure.
 
 ---
 
-# 46. Important Git Rule
+# Security Considerations
 
 Do not commit:
 
@@ -1526,56 +1506,23 @@ Gemini API keys
 Passwords
 Private keys
 .env files containing secrets
-Terraform state containing sensitive information
-Temporary incident data if it contains sensitive information
+Sensitive Terraform state
+Sensitive incident data
 ```
 
-The personal file:
+Never expose destructive Docker or chaos operations as an unauthenticated public API.
 
-```text
-commandss
-```
-
-should remain untracked if it is only being used as a personal command/reference file.
+The dashboard should be protected with appropriate authentication and authorization before being used in a real production environment.
 
 ---
 
-# 47. Terraform Verification
+# Cost Control
 
-At any time, verify that Terraform matches the actual AWS infrastructure:
+CloudForge is a learning and portfolio project.
 
-```bash
-cd terraform/environments/staging
-terraform plan
-```
+AWS resources can create charges.
 
-A clean infrastructure state should show:
-
-```text
-No changes.
-Your infrastructure matches the configuration.
-```
-
-This is an important verification step before making further changes.
-
----
-
-# 48. Safe Project Shutdown
-
-CloudForge is designed as a learning/testing project.
-
-When you are finished working for the day, stop the EC2 instance if you want to retain the infrastructure for later use.
-
-Find the instance:
-
-```bash
-aws ec2 describe-instances \
-  --region us-east-1 \
-  --query "Reservations[].Instances[].{ID:InstanceId,State:State.Name}" \
-  --output table
-```
-
-Stop it:
+When finished testing, stop the EC2 instance:
 
 ```bash
 aws ec2 stop-instances \
@@ -1599,85 +1546,31 @@ Expected:
 stopped
 ```
 
----
+Stopping EC2 does not necessarily eliminate all AWS charges.
 
-# 49. Important AWS Cost Note
+Other resources may continue to incur charges, including:
 
-Stopping an EC2 instance stops normal instance compute charges, but some AWS resources can continue to incur charges.
+* EBS volumes
+* ECR storage
+* CloudWatch log storage
+* Load balancers
+* NAT gateways
+* Elastic IPs
+* Other retained AWS resources
 
-Examples include:
-
-```text
-EBS volumes
-Elastic IPs
-NAT Gateways
-Load Balancers
-CloudWatch resources/log storage
-ECR storage
-Other retained AWS resources
-```
-
-Always check AWS Billing/Cost Explorer before leaving the project running.
+Always check AWS Billing and Cost Explorer.
 
 ---
 
-# 50. Restart the Project Later
+# Destroy AWS Infrastructure
 
-If the infrastructure still exists:
-
-```bash
-aws ec2 start-instances \
-  --region us-east-1 \
-  --instance-ids <INSTANCE_ID>
-```
-
-Verify:
-
-```bash
-aws ec2 describe-instances \
-  --region us-east-1 \
-  --instance-ids <INSTANCE_ID> \
-  --query "Reservations[0].Instances[0].State.Name" \
-  --output text
-```
-
-Expected:
-
-```text
-running
-```
-
-Then connect:
-
-```bash
-aws ssm start-session --target <INSTANCE_ID>
-```
-
-Verify Docker:
-
-```bash
-docker ps
-```
-
-Verify the API:
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
----
-
-# 51. Destroy the Project
-
-When the project is completely finished and the AWS resources are no longer required, Terraform can remove the infrastructure.
-
-First:
+When the project is completely finished:
 
 ```bash
 cd terraform/environments/staging
 ```
 
-Review what would be destroyed:
+Review the destroy plan:
 
 ```bash
 terraform plan -destroy
@@ -1699,408 +1592,245 @@ After destruction, verify the AWS resources and billing console.
 
 ---
 
-# 52. Dev Environment
+# Dev Environment
 
-CloudForge also contains a separate Terraform environment:
+CloudForge also contains:
 
 ```text
 terraform/environments/dev
 ```
 
-The purpose is to keep development infrastructure separate from staging infrastructure.
-
-The environments follow the same Terraform modules:
+The purpose is to maintain separate Terraform environments while reusing common modules:
 
 ```text
 terraform/modules/network
 terraform/modules/compute
 ```
 
-This demonstrates a multi-environment Terraform structure rather than placing all infrastructure into a single configuration.
+This demonstrates a multi-environment infrastructure structure.
 
 ---
 
-# 53. Project Lifecycle
-
-The complete CloudForge workflow is:
+# Project Lifecycle
 
 ```text
-1. Clone GitHub repository
-        ↓
-2. Configure AWS CLI
-        ↓
-3. Terraform init
-        ↓
-4. Terraform validate
-        ↓
-5. Terraform plan
-        ↓
-6. Terraform apply
-        ↓
-7. AWS VPC + EC2 + IAM + Security Group
-        ↓
-8. Connect through AWS SSM
-        ↓
-9. Clone CloudForge on EC2
-        ↓
-10. Build Docker image
-        ↓
-11. Run CloudForge API
-        ↓
-12. Configure health monitoring
-        ↓
-13. Configure self-healing
-        ↓
-14. Configure runtime status publisher
-        ↓
-15. Configure Gemini analyzer
-        ↓
-16. Start CloudForge dashboard
-        ↓
-17. Configure Jenkins
-        ↓
-18. Push image to ECR
-        ↓
-19. Jenkins deploys through SSM
-        ↓
-20. Run chaos tests
-        ↓
-21. Run load tests
-        ↓
-22. Review incidents + AI analysis
-        ↓
-23. Verify Terraform
-        ↓
-24. Stop or destroy AWS resources
-```
-
----
-
-# 54. Failure Recovery Lifecycle
-
-The main CloudForge self-healing workflow is:
-
-```text
-                 Application
-                     │
-                     ▼
-                Health Check
-                     │
-             ┌───────┴───────┐
-             │               │
-          Healthy          Failed
-             │               │
-             ▼               ▼
-         Continue       Collect Evidence
-                             │
-                             ▼
-                       Self-Healing
-                             │
-                             ▼
-                     Restart Container
-                             │
-                             ▼
-                       Health Check
-                             │
-                  ┌──────────┴──────────┐
-                  │                     │
-               Healthy               Failed
-                  │                     │
-                  ▼                     ▼
-             Incident Record       Recovery Failed
-                  │
-                  ▼
-             Gemini Analysis
-                  │
-                  ▼
-               Dashboard
-```
-
----
-
-# 55. What This Project Demonstrates
-
-CloudForge demonstrates practical knowledge of:
-
-```text
-AWS
+Clone Repository
+       |
+       v
+Configure AWS
+       |
+       v
 Terraform
-VPC
-EC2
-IAM
-SSM
-Docker
-ECR
-Linux
-Bash
-systemd
-FastAPI
-Jenkins
-CI/CD
-CloudWatch
-Monitoring
+       |
+       v
+AWS Infrastructure
+       |
+       v
+SSM Access
+       |
+       v
+Docker Application
+       |
+       v
+Health Monitoring
+       |
+       v
 Self-Healing
-Incident Management
-AI-assisted Troubleshooting
-Chaos Engineering
-Load Testing
-Infrastructure as Code
-Multi-Environment Deployment
-```
-
----
-
-# 56. Key DevOps Concepts Demonstrated
-
-## Infrastructure as Code
-
-Terraform creates and manages the AWS infrastructure.
-
-```text
-Terraform
-   ↓
-Repeatable infrastructure
-```
-
-## Continuous Integration
-
-Jenkins validates and builds the application.
-
-```text
-Git Push
-   ↓
-Jenkins
-   ↓
-Tests
-   ↓
-Docker Build
-```
-
-## Continuous Deployment
-
-The built image is pushed to ECR and deployed to EC2.
-
-```text
-Docker Image
-   ↓
+       |
+       v
+Incident Evidence
+       |
+       v
+Gemini AI Analysis
+       |
+       v
+Dashboard
+       |
+       v
+Jenkins CI/CD
+       |
+       v
 ECR
-   ↓
-SSM
-   ↓
-EC2
-```
-
-## Monitoring
-
-The health endpoint is checked continuously.
-
-```text
-/health
-```
-
-## Self-Healing
-
-Detected container failures trigger automated recovery.
-
-```text
-Failure
-   ↓
-Detect
-   ↓
-Restart
-   ↓
-Verify
-```
-
-## Incident Response
-
-Evidence is stored in structured JSON.
-
-```text
-Incident
-   ↓
-Evidence
-   ↓
-Recovery
-   ↓
-Analysis
-```
-
-## AI-Assisted Operations
-
-Gemini analyzes incident evidence and produces an operational explanation.
-
-```text
-Incident JSON
-     ↓
-Gemini
-     ↓
-AI Analysis
-```
-
-## Chaos Engineering
-
-Controlled failures are introduced to verify recovery behavior.
-
-```text
-Stop
-Kill
-Network Failure
-```
-
-## Performance Testing
-
-The application is tested under concurrent request load.
-
-```text
-Requests
-   ↓
-Concurrency
-   ↓
-Latency
-   ↓
-Throughput
+       |
+       v
+SSM Deployment
+       |
+       v
+Chaos Testing
+       |
+       v
+Load Testing
+       |
+       v
+Verification
+       |
+       v
+Stop / Destroy AWS Resources
 ```
 
 ---
 
-# 57. Important Limitations
+# What This Project Demonstrates
 
-CloudForge is a learning and portfolio project.
+CloudForge demonstrates practical experience with:
 
-The current implementation has boundaries.
+* AWS
+* Terraform
+* VPC
+* EC2
+* IAM
+* AWS Systems Manager
+* Docker
+* Amazon ECR
+* Linux
+* Bash
+* systemd
+* FastAPI
+* Jenkins
+* CI/CD
+* CloudWatch
+* Monitoring
+* Self-Healing
+* Incident Management
+* AI-assisted Troubleshooting
+* Chaos Engineering
+* Load Testing
+* Infrastructure as Code
+* Multi-Environment Deployment
+
+---
+
+# Limitations
+
+CloudForge is a learning and portfolio project rather than a production platform.
+
+Current limitations include:
 
 ### Self-Healing
 
-The current self-healing system primarily handles application/container failures.
-
-It does not automatically repair every infrastructure problem.
+The current recovery mechanism primarily handles application/container failures.
 
 ### AI Analysis
 
-Gemini analysis is based on the evidence provided to the analyzer.
+Gemini analysis depends on the evidence available in the incident record.
 
-If the available evidence does not identify the exact root cause, the analyzer should state that the exact root cause cannot be conclusively determined.
+If the evidence is insufficient, the analyzer should state that the exact root cause cannot be conclusively determined.
 
 ### Load Testing
 
-The load-testing results depend on the specific EC2 instance, application version, network conditions, and test configuration.
+Performance results depend on:
+
+* EC2 instance type
+* Network conditions
+* Application version
+* Concurrency
+* Request type
+* System load
+* AWS environment
 
 ### Security
 
-The dashboard and testing endpoints should not be exposed publicly without appropriate authentication and authorization.
-
-Do not expose destructive Docker or chaos operations as an unauthenticated public API.
+The current dashboard should not be treated as a production-ready authenticated operations platform.
 
 ---
 
-# 58. Future Improvements
+# Future Improvements
 
-Possible future CloudForge improvements include:
+Potential future improvements include:
 
-```text
-Policy-based self-healing
-Automatic network recovery
-Auto Scaling
-Application Load Balancer
-HTTPS
-Authentication
-Role-based dashboard access
-Prometheus
-Grafana
-Distributed tracing
-CloudWatch alarms
-SNS notifications
-Slack notifications
-Incident history database
-AI-powered remediation recommendations
-AI-powered recovery policies
-Multi-region deployment
-Kubernetes deployment
-EKS integration
-Blue/Green deployment
-Canary deployment
-Advanced security scanning
-Container vulnerability scanning
-```
+* Policy-based self-healing
+* Automatic network recovery
+* Application Load Balancer
+* HTTPS
+* Authentication
+* Role-based dashboard access
+* Prometheus
+* Grafana
+* CloudWatch alarms
+* SNS notifications
+* Slack notifications
+* Incident history database
+* AI-powered remediation recommendations
+* AI-powered recovery policies
+* Auto Scaling
+* Multi-region deployment
+* Kubernetes/EKS integration
+* Blue/Green deployments
+* Canary deployments
+* Container vulnerability scanning
+* Advanced security scanning
 
 ---
 
-# 59. Useful Commands
+# Useful Commands
 
-Check API:
+## Check API
 
 ```bash
 curl http://127.0.0.1:8000/health
 ```
 
-Check Docker:
+## Check containers
 
 ```bash
 docker ps
 ```
 
-Check API logs:
+## API logs
 
 ```bash
 docker logs cloudforge-api
 ```
 
-Follow API logs:
+## Follow API logs
 
 ```bash
 docker logs -f cloudforge-api
 ```
 
-Inspect container:
+## Inspect API container
 
 ```bash
 docker inspect cloudforge-api
 ```
 
-Check monitor:
+## Monitor service
 
 ```bash
 sudo systemctl status cloudforge-monitor
 ```
 
-Check status publisher:
-
-```bash
-sudo systemctl status cloudforge-status-publisher
-```
-
-View monitor logs:
+## Monitor logs
 
 ```bash
 sudo journalctl -u cloudforge-monitor -f
 ```
 
-View runtime state:
+## Status publisher
+
+```bash
+sudo systemctl status cloudforge-status-publisher
+```
+
+## Runtime status
 
 ```bash
 cat /opt/cloudforge/runtime/status.json
 ```
 
-List incidents:
+## Incidents
 
 ```bash
 ls -lah /opt/cloudforge/incidents
 ```
 
-Check latest incident:
+## Latest incident
 
 ```bash
 ls -t /opt/cloudforge/incidents/*.json | head -n 1
 ```
 
-Check Git:
-
-```bash
-git status
-```
-
-Check Terraform:
+## Terraform verification
 
 ```bash
 cd terraform/environments/staging
@@ -2109,201 +1839,11 @@ terraform plan
 
 ---
 
-# 60. Troubleshooting
-
-## API is unhealthy
-
-Check:
-
-```bash
-docker ps
-```
-
-Then:
-
-```bash
-docker logs cloudforge-api
-```
-
-Then:
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
----
-
-## Container is stopped
-
-Check:
-
-```bash
-docker inspect cloudforge-api \
-  --format '{{.State.Status}}'
-```
-
-Start:
-
-```bash
-docker start cloudforge-api
-```
-
-Then:
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
----
-
-## Monitor is not running
-
-Check:
-
-```bash
-sudo systemctl status cloudforge-monitor
-```
-
-Start:
-
-```bash
-sudo systemctl start cloudforge-monitor
-```
-
-View logs:
-
-```bash
-sudo journalctl -u cloudforge-monitor -n 100
-```
-
----
-
-## AI analyzer fails
-
-Check the virtual environment:
-
-```bash
-cd /opt/cloudforge
-. .venv/bin/activate
-```
-
-Check Gemini dependency:
-
-```bash
-python -c "from google import genai; print('Gemini SDK OK')"
-```
-
-Check that the environment variable exists without printing the secret:
-
-```bash
-if [ -n "$GEMINI_API_KEY" ]; then
-    echo "GEMINI_API_KEY is configured"
-else
-    echo "GEMINI_API_KEY is not configured"
-fi
-```
-
-Never print the actual API key.
-
----
-
-## Dashboard is not loading
-
-Check:
-
-```bash
-docker ps --filter name=cloudforge-dashboard
-```
-
-Check logs:
-
-```bash
-docker logs cloudforge-dashboard
-```
-
-Test locally:
-
-```bash
-curl -I http://127.0.0.1:8080/dashboard/
-```
-
-Verify the AWS Security Group allows the required dashboard port only when appropriate.
-
----
-
-# 61. Evidence Produced by CloudForge
-
-The project produces operational evidence such as:
-
-```text
-Docker container state
-Application health responses
-Incident JSON records
-Container logs
-Host kernel logs
-Recovery duration
-Recovery status
-AI incident analysis
-CPU usage
-Memory usage
-Load-test results
-Terraform plans
-Jenkins deployment results
-```
-
-This evidence makes the project demonstrable rather than only theoretical.
-
----
-
-# 62. Final Verification Checklist
-
-Before considering the project complete:
-
-```text
-[ ] GitHub repository works
-[ ] AWS CLI configured
-[ ] Terraform initializes
-[ ] terraform validate passes
-[ ] terraform plan is understood
-[ ] AWS infrastructure created
-[ ] EC2 accessible through SSM
-[ ] Docker installed
-[ ] CloudForge API running
-[ ] /health returns healthy
-[ ] Docker health check works
-[ ] Monitor service running
-[ ] Self-healing tested
-[ ] Incident JSON generated
-[ ] Gemini analyzer works
-[ ] AI analysis generated
-[ ] Runtime status publisher works
-[ ] Dashboard works
-[ ] ECR repository works
-[ ] Jenkins pipeline works
-[ ] CI/CD deployment tested
-[ ] Container stop chaos test completed
-[ ] Container kill chaos test completed
-[ ] Network failure test completed
-[ ] Load test completed
-[ ] Terraform plan verified
-[ ] AWS resources stopped or destroyed after testing
-```
-
----
-
-# 63. CloudForge in One Sentence
-
-> **CloudForge is a Terraform-managed AWS DevOps platform that deploys a Dockerized application through Jenkins and ECR, continuously monitors it, automatically recovers container failures, records incident evidence, analyzes incidents with Gemini AI, and visualizes the system through a live dashboard.**
-
----
-
-# 64. Repository
+# Repository
 
 GitHub:
 
-```text
-https://github.com/Savio9481/cloudforge
-```
+[https://github.com/Savio9481/cloudforge](https://github.com/Savio9481/cloudforge)
 
 Main branch:
 
@@ -2313,9 +1853,15 @@ main
 
 ---
 
-# 65. Project Goal
+# CloudForge in One Sentence
 
-The purpose of CloudForge is to demonstrate a complete practical DevOps workflow:
+> **CloudForge is a Terraform-managed AWS DevOps platform that deploys a Dockerized application through Jenkins and Amazon ECR, continuously monitors its health, automatically recovers container failures, records incident evidence, analyzes incidents with Gemini AI, and visualizes the system through a live DevOps dashboard.**
+
+---
+
+# Project Goal
+
+The goal of CloudForge is to demonstrate a complete practical DevOps workflow combining:
 
 ```text
 Infrastructure
@@ -2332,7 +1878,7 @@ Self-Healing
       +
 Incident Response
       +
-AI
+AI Analysis
       +
 Dashboard
       +
@@ -2341,4 +1887,27 @@ Chaos Testing
 Performance Testing
 ```
 
-The project can be expanded progressively into a more advanced production-style cloud platform.
+The project can be progressively extended toward a more production-oriented cloud platform.
+
+````
+
+### One important point
+
+I deliberately **didn't put every command from your 12 documentation files into the README**. The README should be the **entry point**:
+
+```text
+README
+  │
+  ├── Quick Start
+  │
+  ├── Full AWS Setup
+  │
+  └── docs/
+       ├── setup.md
+       ├── deployment.md
+       ├── dashboard.md
+       ├── self-healing.md
+       ├── ...
+````
+
+
