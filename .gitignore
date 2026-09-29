@@ -17,3 +17,8 @@ incidents/
 # Python cache
 __pycache__/
 *.pyc
+
+# Local runtime and development files
+.venv/
+runtime/
+scripts/self-heal.sh.backup
