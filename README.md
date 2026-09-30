@@ -196,7 +196,7 @@ Health Verification
       └── Failed  ──► Recovery Failure
 ```
 
-The current implementation automatically handles application/container failures that can be recovered by restarting the container.
+The current implementation automatically handles application/container failures that are recoverable by restarting the container.
 
 ### Incident Evidence
 
@@ -300,8 +300,8 @@ dashboard/
 | Container Registry | Amazon ECR |
 | CI/CD | Jenkins |
 | Application | Python + FastAPI |
-| Monitoring | Bash + systemd |
-| Self-Healing | Docker + Bash |
+| Monitoring | Bash + systemd + Docker |
+| Self-Healing | Bash + Docker |
 | AI Analysis | Google Gemini |
 | Dashboard | HTML + CSS + JavaScript + FastAPI |
 | Logging | Amazon CloudWatch |
@@ -500,6 +500,8 @@ mkdir -p runtime incidents
 New-Item -ItemType Directory -Force runtime
 New-Item -ItemType Directory -Force incidents
 ```
+
+> **Note:** The local Docker setup runs the dashboard independently. Runtime status and incident data are populated by the AWS monitoring/self-healing components described later in this README, so the local dashboard will show limited or empty runtime and incident information.
 
 ### 8. Run the Dashboard
 
@@ -755,6 +757,8 @@ Test:
 curl http://127.0.0.1:8000/health
 ```
 
+After the API is running, continue with the Monitoring and Self-Healing section, then configure the Gemini analyzer, dashboard, ECR, and Jenkins CI/CD components as required.
+
 ---
 
 ## Monitoring and Self-Healing
@@ -843,10 +847,12 @@ Configure the Gemini API key securely on the host.
 
 The key should be stored outside the repository and injected into the analyzer environment.
 
-For example:
+The `GEMINI_API_KEY` environment variable must be available in the shell or service environment before running the analyzer.
+
+For example, the host environment (such as `/etc/cloudforge/cloudforge.env`) should provide:
 
 ```bash
-export GEMINI_API_KEY="<YOUR_GEMINI_API_KEY>"
+GEMINI_API_KEY="<YOUR_GEMINI_API_KEY>"
 ```
 
 Never commit the real key to GitHub.
@@ -939,7 +945,7 @@ Dashboard API:
 curl http://127.0.0.1:8080/api/dashboard
 ```
 
-If port 8080 is allowed by the AWS Security Group:
+If inbound TCP port 8080 is allowed by the AWS Security Group:
 
 ```text
 http://<EC2_PUBLIC_IP>:8080/dashboard/
@@ -953,13 +959,31 @@ The public IP should not be hard-coded because it can change when the EC2 instan
 
 CloudForge uses Amazon ECR to store application images.
 
+### 1. Create the ECR Repository
+
+Create the repository (one-time setup):
+
+```bash
+aws ecr create-repository \
+  --repository-name cloudforge-api \
+  --region us-east-1
+```
+
+Verify:
+
+```bash
+aws ecr describe-repositories \
+  --repository-names cloudforge-api \
+  --region us-east-1
+```
+
 Repository:
 
 ```text
 cloudforge-api
 ```
 
-Authenticate:
+### 2. Authenticate Docker with ECR
 
 ```bash
 aws ecr get-login-password --region us-east-1 | \
@@ -969,13 +993,13 @@ docker login \
   <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
 ```
 
-Build:
+### 3. Build the Image
 
 ```bash
 docker build -t cloudforge-api:1.0.0 ./app
 ```
 
-Tag:
+### 4. Tag the Image
 
 ```bash
 docker tag \
@@ -983,12 +1007,22 @@ docker tag \
   <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:1.0.0
 ```
 
-Push:
+### 5. Push the Image
 
 ```bash
 docker push \
   <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/cloudforge-api:1.0.0
 ```
+
+Verify the image:
+
+```bash
+aws ecr describe-images \
+  --repository-name cloudforge-api \
+  --region us-east-1
+```
+
+The Jenkins CI/CD pipeline also uses this ECR repository to store deployment images.
 
 ---
 
@@ -1343,6 +1377,19 @@ Confirm:
 yes
 ```
 
+If the Dev/Jenkins environment was also created, destroy it separately from `terraform/environments/dev`.
+
+### Delete the ECR Repository
+
+The ECR repository is created manually (not by Terraform), so `terraform destroy` does not remove it. Delete it separately to avoid image storage charges:
+
+```bash
+aws ecr delete-repository \
+  --repository-name cloudforge-api \
+  --region us-east-1 \
+  --force
+```
+
 After destruction, verify the AWS resources and billing console.
 
 ---
@@ -1421,6 +1468,7 @@ Potential future improvements include:
 | Incidents | `ls -lah /opt/cloudforge/incidents` |
 | Latest incident | `ls -t /opt/cloudforge/incidents/*.json \| head -n 1` |
 | Terraform verification | `cd terraform/environments/staging && terraform plan` |
+| ECR images | `aws ecr describe-images --repository-name cloudforge-api --region us-east-1` |
 
 ---
 
@@ -1446,7 +1494,8 @@ Use this checklist when reproducing CloudForge:
 - [ ] AI analysis generated
 - [ ] Runtime status publisher working
 - [ ] Dashboard working
-- [ ] ECR repository working
+- [ ] ECR repository created
+- [ ] Image pushed to ECR
 - [ ] Jenkins pipeline working
 - [ ] CI/CD deployment tested
 - [ ] Container stop chaos test completed
@@ -1454,6 +1503,7 @@ Use this checklist when reproducing CloudForge:
 - [ ] Network failure test completed
 - [ ] Load test completed
 - [ ] AWS resources stopped or destroyed
+- [ ] ECR repository deleted (if project is finished)
 
 ---
 
